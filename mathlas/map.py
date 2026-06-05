@@ -1,39 +1,34 @@
-"""MAP — the needs<->guarantees engine (the genuinely novel core).
+"""MAP — the needs<->guarantees scaffold (the genuinely valuable step).
 
-Given a PROBLEM and CANDIDATE existing results, decide which candidates apply
-and HOW. This is the step every retrieval tool (TheoremSearch included) punts to
-the human: not keyword similarity, but matching what the problem NEEDS to what a
-known result GUARANTEES — directly, or after a reduction/analogy.
+Given a PROBLEM and a CANDIDATE existing result, decide whether the candidate
+applies and HOW: not keyword similarity, but matching what the problem NEEDS to
+what a known result GUARANTEES -- directly, or after a reduction/analogy. This is
+the step every retrieval tool (TheoremSearch included) punts to the human, and
+the step the May-2026 unit-distance disproof showed is where the value lives.
 
-Two-stage structural mapping (abduction -> deduction)
------------------------------------------------------
-The 2024-2026 analogy-reasoning literature finds LLMs do analogy by *emergent
-pattern recognition* and lack a formal mechanism to keep a source->target
-correspondence consistent; a two-stage scheme -- first ABSTRACT the structure,
-then APPLY it -- beats one-shot mapping on hard cases (Webb et al. on LLM
-analogy; structural-mapping work, e.g. arXiv:2603.29997). So MAP runs:
+THE DESIGN CORRECTION: mathlas is a tool an AI uses, not one that uses an AI.
+----------------------------------------------------------------------------
+The needs<->guarantees MAPPING is informal mathematical reasoning -- exactly what
+the CALLING AI (Claude Code / Cursor / any agent) is for. So the PRIMARY mapping
+interface, ``mapping_scaffold(problem, candidate_statement)``, builds the
+needs<->guarantees structure as DATA -- the objects/need/given of the problem and
+the explicit questions the AI must answer -- with **NO LLM and NO API key**. The
+AI consumes the scaffold and does the reasoning; mathlas provides the structure.
 
-  1. ABDUCTION (once per problem): extract a structure-level *requirement
-     signature* -- the objects, the property/conclusion sought, and the
-     hypotheses the problem already provides -- independent of any candidate.
-  2. DEDUCTION (per candidate): match the candidate's GUARANTEE against that
-     fixed signature -- direct or via a reduction -- rather than re-reading the
-     problem fresh each time (which lets the model drift toward feature/keyword
-     similarity). This is matching a *requirement* to a *guarantee*, the step
-     the unit-distance disproof showed is the valuable one.
-
-The reasoning is done by a pluggable LLM (see llm.py). Every step parses a
-strict JSON verdict, so each mapping is auditable. The engine NEVER claims
-novelty — it only connects a problem to existing results. The result of MAP is
-then handed to the tiered VERIFY (verify_apply.py) for an adversarial check.
+An OPTIONAL bring-your-own-LLM path (``extract_signature`` / ``map_candidates``)
+remains below for the standalone ``solve()`` convenience, mirroring the two-stage
+abduction->deduction scheme the analogy literature favours (Webb et al. on LLM
+analogy; structural-mapping work, e.g. arXiv:2603.29997). mathlas NEVER supplies
+the LLM for it -- a caller brings their own. The engine NEVER claims novelty; it
+only connects a problem to existing results.
 """
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
-from typing import List, Optional
+import re
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional
 
-from .llm import LLM
 from .retrieve import Candidate
 
 _SYSTEM = (
@@ -121,7 +116,130 @@ class Mapping:
     problem: str = ""              # original problem text (threaded to VERIFY)
 
 
-def extract_signature(problem: str, llm: LLM) -> Signature:
+# --------------------------------------------------------------------------- #
+# PRIMARY mapping interface (NO LLM): the needs<->guarantees scaffold as DATA.
+#
+# mathlas does not perform the analogy reasoning; it structures the problem and
+# poses the exact needs<->guarantees questions for the CALLING AI to answer.
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class MappingScaffold:
+    """The needs<->guarantees structure as text/data for the CALLING AI -- NO LLM.
+
+    Fields the AI consumes to decide if the candidate applies and how:
+      * ``signature`` -- a lightly-parsed view of the problem (objects / need /
+        given) to anchor the AI's abduction step;
+      * ``checklist``  -- the candidate's atomic preconditions + conclusion
+        (from verify_apply.applicability_checklist);
+      * ``questions``  -- the explicit needs<->guarantees questions to answer;
+      * ``answer_template`` -- the JSON shape the AI should fill in, so its
+        verdict is auditable (the same shape the optional LLM path emits).
+    """
+    problem: str
+    candidate_statement: str
+    signature: Dict[str, object]
+    checklist: Dict[str, object]
+    questions: List[str]
+    answer_template: Dict[str, object]
+    note: str = ("mathlas built this scaffold with NO LLM. The CALLING AI does "
+                 "the needs<->guarantees reasoning and fills in answer_template; "
+                 "then verify each precondition (applicability_checklist) and, "
+                 "where the claim reduces to a numeric identity, call "
+                 "verify_numeric for an airtight check.")
+
+
+# Cue words that often introduce the problem's GOAL / what it needs.
+_NEED_CUES = ("show that", "prove that", "prove", "show", "find", "determine",
+              "compute", "decide whether", "decide", "establish", "is it true",
+              "does", "verify that", "evaluate")
+# Cue words that introduce a GIVEN hypothesis in the problem.
+_GIVEN_CUES = ("let ", "suppose ", "assume ", "given ", "with ", "where ",
+               "for all ", "for every ", "if ")
+
+
+def _heuristic_signature(problem: str) -> Dict[str, object]:
+    """A NO-LLM, lightly-parsed requirement signature for the AI to refine.
+
+    Pulls a best-effort ``need`` (the goal clause) and ``given`` (hypothesis
+    clauses) out of the problem prose. Deliberately shallow -- the AI does the
+    real abduction; this just seeds the structure so the scaffold is concrete.
+    """
+    text = (problem or "").strip()
+    low = text.lower()
+    need = text
+    for cue in _NEED_CUES:
+        idx = low.find(cue)
+        if idx != -1:
+            need = text[idx:].strip().rstrip(".")
+            break
+    givens: List[str] = []
+    # sentence-ish split; collect clauses opening with a 'given' cue.
+    for chunk in re.split(r"(?<=[.;])\s+|,\s+", text):
+        c = chunk.strip()
+        cl = c.lower()
+        if any(cl.startswith(g) for g in _GIVEN_CUES):
+            givens.append(c.rstrip(".").strip())
+    # crude object guess: capitalised tokens + math-y words.
+    objects = sorted(set(re.findall(r"\b[A-Z][A-Za-z]{2,}\b", text)))[:8]
+    return {"objects": objects, "need": need, "given": givens}
+
+
+def mapping_scaffold(problem: str, candidate_statement: str) -> MappingScaffold:
+    """Build the needs<->guarantees scaffold for ``problem`` vs a candidate -- NO LLM.
+
+    Returns the structured questions and a fill-in template the CALLING AI uses to
+    decide whether the candidate applies and how (direct or via a reduction).
+    mathlas supplies the structure; the AI does the reasoning. Pair the AI's
+    answers with ``verify_apply.applicability_checklist`` (precondition marking)
+    and, when the claim reduces to a numeric identity, ``verify_numeric``.
+    """
+    from .verify_apply import applicability_checklist  # avoid import cycle
+    sig = _heuristic_signature(problem)
+    cl = applicability_checklist(candidate_statement)
+    checklist = {
+        "preconditions": list(cl.preconditions),
+        "conclusion": cl.conclusion,
+        "instructions": cl.instructions,
+    }
+    questions = [
+        "NEED: In one line, what does the problem actually require (its goal)?",
+        "GUARANTEE: In one line, what does the candidate result guarantee "
+        "(its conclusion, under its hypotheses)?",
+        "CONNECTION: Does that guarantee supply the need -- directly, or after a "
+        "reduction/transform? Match requirement-to-guarantee, NOT keyword overlap.",
+        "REDUCTION: If not direct, what exact transform/reduction links them "
+        "(or is there none, so the result does not apply)?",
+        "PRECONDITIONS: For each precondition in the checklist, does the "
+        "problem's `given` establish it? Name any one that fails.",
+        "VERDICT: applies = true only if every precondition holds AND the "
+        "guarantee meets the need.",
+    ]
+    answer_template = {
+        "applies": "true|false",
+        "confidence": "0.0-1.0",
+        "need": "<what the problem needs, one line>",
+        "guarantee": "<what the result guarantees, one line>",
+        "connection": "<how the result supplies the need, or why it does not>",
+        "preconditions": [
+            {"text": "<precondition>", "satisfied": "true|false|unknown",
+             "evidence": "<why>"}
+        ],
+        "reduction": "<the transform/reduction linking them, or null>",
+        "failure": "<the single condition or mismatch that breaks it, or null>",
+    }
+    return MappingScaffold(
+        problem=(problem or "").strip(),
+        candidate_statement=(candidate_statement or "").strip(),
+        signature=sig, checklist=checklist, questions=questions,
+        answer_template=answer_template,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# OPTIONAL bring-your-own-LLM path (standalone solve()): two-stage abduction ->
+# deduction. mathlas NEVER supplies the LLM; the caller brings their own.
+# --------------------------------------------------------------------------- #
+def extract_signature(problem: str, llm: "LLM") -> Signature:
     """ABDUCTION: extract the problem's requirement signature once, up front.
     On a parse failure, fall back to a minimal signature (problem as its own
     need) so the deduction stage still runs."""

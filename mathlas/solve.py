@@ -1,16 +1,23 @@
-"""solve() -- the full pipeline: route -> retrieve -> MAP -> VERIFY -> provenance.
+"""solve() -- OPTIONAL standalone bring-your-own-LLM convenience.
 
-Given a problem, a retriever, and an LLM brain, find EXISTING results that apply,
-each with the needs<->guarantees connection, an adversarial applicability
-verdict, and an honest provenance label. This is the whole math_engine loop for
-the informal/retrieval domain (the numeric domain has its own airtight facade in
-engine.py). Everything here is our own; no third-party running system is called.
+IMPORTANT: this is the SECONDARY interface. mathlas is a tool an AI *uses*, not
+one that uses an AI. The PRIMARY way to drive the informal/retrieval domain is
+the MCP tools (``mathlas/server.py``) or the plain library functions
+(``search_existing_math`` -> ``mapping_scaffold`` -> ``applicability_checklist``
+-> ``verify_numeric``) -- all with NO LLM and NO API key, where the CALLING AI
+does the reasoning.
 
-Pipeline
---------
+``solve()`` exists only as a one-shot library helper for callers who want to
+*bring their own* LLM and have mathlas run the needs<->guarantees reasoning loop
+for them. mathlas ships NO vendor SDK and NO default model: ``llm`` defaults to
+the ``EchoLLM`` no-op stub (so the package runs with zero API key), which returns
+no applicable mapping -- supply your own ``LLM`` subclass to get real reasoning.
+
+Pipeline (when a real LLM is supplied)
+--------------------------------------
   retrieve  -> our own hybrid (dense+BM25+RRF) index returns candidates
   MAP       -> two-stage (abduction signature -> per-candidate deduction)
-  VERIFY    -> structured-adversarial informal applicability check (the moat);
+  VERIFY    -> structured-adversarial informal applicability check;
                numeric/formal tiers are available via verify_apply for claims
                that reduce to those forms
   PROVENANCE-> RETRIEVED_APPLIES / RETRIEVED_UNVERIFIED / UNIDENTIFIED -- never
@@ -21,7 +28,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from .llm import LLM
+from .llm import LLM, EchoLLM
 from .map import Mapping, extract_signature, map_candidates
 from .provenance import Provenance, Novelty
 from .retrieve import Retriever
@@ -73,16 +80,22 @@ class Solution:
         return "\n".join(lines)
 
 
-def solve(problem: str, retriever: Retriever, llm: LLM, *,
+def solve(problem: str, retriever: Retriever, llm: Optional[LLM] = None, *,
           k: int = 10, min_confidence: float = 0.5,
           verify: bool = True, verify_passes: int = 1) -> Solution:
-    """Find, map, and verify existing results that apply to ``problem``.
+    """OPTIONAL bring-your-own-LLM helper: find, map, and verify existing results.
 
-    ``verify=False`` returns mapped-but-unverified candidates (faster, e.g. with
-    the EchoLLM stub or for retrieval-only use). With ``verify=True`` every
-    mapped candidate is run through the structured-adversarial informal check,
-    and provenance reflects whether it survived.
+    ``llm`` defaults to ``EchoLLM`` (a no-op stub) so the package runs with NO
+    API key -- but then no mapping is produced. Supply your OWN ``LLM`` subclass
+    for real needs<->guarantees reasoning. For the no-LLM, AI-driven path, use the
+    MCP tools / library functions (``search_existing_math`` -> ``mapping_scaffold``
+    -> ``applicability_checklist`` -> ``verify_numeric``) instead.
+
+    ``verify=False`` returns mapped-but-unverified candidates (faster). With
+    ``verify=True`` every mapped candidate is run through the structured
+    informal check, and provenance reflects whether it survived.
     """
+    llm = llm or EchoLLM()
     candidates = retriever.retrieve(problem, k=k)
     sig = extract_signature(problem, llm)
     mappings = map_candidates(problem, candidates, llm,
