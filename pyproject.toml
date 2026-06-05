@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# NOTE: "mathlas" is a PROVISIONAL name — availability-check on PyPI before
+# publishing (cf. splatreg, where the first pick "gsfit" was already taken).
+name = "mathlas"
+version = "0.0.1"
+description = "An open math-application engine: map a problem to the existing math that solves it, and verify it."
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Krishi Attri", email = "krishiattriwork@gmail.com" }]
+keywords = ["mathematics", "symbolic", "pslq", "theorem-retrieval", "verification", "oeis"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Programming Language :: Python :: 3",
+]
+dependencies = ["mpmath>=1.3", "sympy>=1.12", "numpy>=1.24", "scipy>=1.10"]
+
+[project.optional-dependencies]
+sequences = ["requests>=2.28"]                 # OEIS lookup (next slice)
+retrieve = ["pyarrow>=14"]                      # read the open dataset parquets
+embed = ["sentence-transformers>=3.0", "torch>=2.1"]  # Qwen3 production embedder
+llm = ["anthropic>=0.40"]                       # optional Anthropic brain (any provider works)
+
+[project.scripts]
+mathlas = "mathlas.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["mathlas*"]

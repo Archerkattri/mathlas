@@ -1,0 +1,14 @@
+# Local analysis material — third-party paper PDFs + cloned repos.
+# Not ours, not redistributed. Kept local for design study only.
+reference/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ipynb_checkpoints/
