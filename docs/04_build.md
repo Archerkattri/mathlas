@@ -22,7 +22,7 @@
 | `verify_apply` informal tier **judges via LLM** | `applicability_checklist(candidate)` returns the result's atomic preconditions as a **checklist** the AI marks — **no LLM** |
 | `solve(problem, retr, llm)` is the interface | the **MCP server** (`server.py`) + plain library functions are the interface; `solve()` is a **secondary** bring-your-own-LLM convenience (default `EchoLLM`, no vendor) |
 | `AnthropicLLM`, `pip install '.[llm]'`, API key | **deleted.** Core (numeric + retrieval + verify + MCP) runs with **ZERO LLM, ZERO API key** |
-| — | **new MCP server** exposes 6 AI-callable tools (`identify_constant`, `search_existing_math`, `verify_numeric`, `verify_formal`, `applicability_checklist`, `mapping_scaffold`) |
+| — | **MCP server** exposes 7 AI-callable tools (`identify_constant`, **`identify_sequence`**, `search_existing_math`, `verify_numeric`, `verify_formal`, `applicability_checklist`, `mapping_scaffold`) |
 
 Register in Claude Code: `claude mcp add mathlas -- python -m mathlas.server`.
 The server prefers the official `mcp` SDK (FastMCP) and **falls back to a
@@ -88,10 +88,11 @@ dependency-free stdio JSON-RPC MCP server** if `mcp` is absent — so it always 
   deliberately NOT run here (resource limits); validation uses a small subset.
 
 ### MCP server — `server.py` (the primary, AI-callable interface) **[NEW]**
-- Exposes six tools, **all NO-LLM**, returning JSON data the calling AI reasons
-  over: `identify_constant`, `search_existing_math`, `verify_numeric`,
-  `verify_formal`, `applicability_checklist`, `mapping_scaffold`. The tool bodies
-  are plain functions (single source of truth); both server backends call them.
+- Exposes **seven** tools, **all NO-LLM**, returning JSON data the calling AI
+  reasons over: `identify_constant`, `identify_sequence`, `search_existing_math`,
+  `verify_numeric`, `verify_formal`, `applicability_checklist`, `mapping_scaffold`.
+  The tool bodies are plain functions (single source of truth); both server
+  backends call them.
 - **Two backends, one wire protocol:** prefers the official **`mcp` SDK
   (FastMCP)**; if `mcp` is not installed, falls back to a **dependency-free stdio
   JSON-RPC** server (`serve_stdio`/`_dispatch`) implementing `initialize` /
@@ -101,6 +102,68 @@ dependency-free stdio JSON-RPC MCP server** if `mcp` is absent — so it always 
   well-known theorems) so it works with **zero downloads / GPU / corpus**; pass
   `corpus_dir` for the real index. Retrievers are cached per corpus (data-flow
   discipline — no re-index per call).
+
+### Integer-sequence identification (OEIS) — `sequence.py` **[NEW, 2026-06-05]**
+- **`identify_sequence(terms, max_results=5)` [airtight, NO LLM].** Given a list of
+  integers, returns matching **OEIS** entries (A-number, name, `https://oeis.org/<A>`
+  URL) by **EXACT term-match** against a *local* copy of the OEIS data — no fuzzy
+  scoring, no embedding, no model. Either the terms occur (as a contiguous run) in
+  a stored sequence or they do not; the verdict is mechanical (the numeric tier's
+  *airtight-or-nothing* discipline, applied to sequences). Comparison is on Python
+  `int` (arbitrary precision) so large OEIS terms never lose digits.
+- **Data (downloaded once, gitignored, removable):** `stripped.gz` (terms) +
+  `names.gz` (names) from `https://oeis.org/`, placed in
+  `reference/downloads/oeis/` (~40 MB total). Override the location with
+  `MATHLAS_OEIS_DIR` or the `data_dir` arg. If the data is absent,
+  `identify_sequence` returns an **honest "data not available"** note — never a
+  fake match.
+- **Index (built once, cached — data-flow discipline):** on first call it parses
+  ~396k sequences and builds an **n-gram index** (length-4 runs of consecutive
+  terms → the A-numbers containing them), so lookups find candidates without
+  scanning all of OEIS and the files are **never re-read** (the 50×-speedup
+  lesson). Build ≈ 16 s once; subsequent lookups are sub-10 ms.
+- **Matching (subsequence/offset-tolerant):** a query matches a stored sequence
+  iff its terms appear as a **contiguous sub-run** anywhere in that sequence, so a
+  leading-term/offset difference still matches — e.g. `[1,1,2,3,5,8,13,21]` hits
+  Fibonacci A000045 (stored `0,1,1,2,3,5,8,…`, run found at offset 1). Each match
+  reports the `offset` (0 ⇒ your terms are a leading prefix). Results rank by
+  **A-number ascending** — OEIS gives low A-numbers to the canonical/foundational
+  sequences, so the right entry surfaces rather than being buried under
+  coincidental high-A-number prefix-sharers (this mirrors OEIS's own ordering).
+- **CLI:** `mathlas 1,1,2,3,5,8,13,21` or `mathlas 2 3 5 7 11 13` auto-detects a
+  sequence (≥ 2 integers, comma- or space-separated, `[]`/`()` ok) and prints the
+  A-number/name/URL; `--oeis-dir DIR` overrides the data location; `--json` emits
+  machine-readable output. A single number still routes to numeric mode.
+
+### Formal (Lean) verify — `verify_apply.py::verify_formal` **[REAL CHECK, 2026-06-05]**
+- The Lean tier is **no longer a stub.** When a Lean toolchain is installed and a
+  `lean` snippet is supplied, `verify_formal` actually **runs the Lean
+  type-checker** on the snippet (writes it to a temp file, invokes `lean`, reads
+  the kernel's verdict) and reports whether it **TYPECHECKS** — a real
+  kernel/proof-term check, not an opinion. `1 + 1 = 2 := rfl` ⇒ typechecks
+  (`applies=True`, confidence 1.0); `1 + 1 = 3 := rfl` ⇒ the kernel's type error is
+  captured (`applies=False`). **No LLM, no network at call time.**
+- **The honest caveat is threaded through every verdict:** a typecheck proves the
+  snippet is well-typed and its proof term passes the kernel — it does **NOT**
+  prove the stated theorem is the right *applicability claim* for the problem
+  (`typecheck ≠ proves-it-applies`; that mapping is the calling AI's job). Honors
+  the long-standing "typecheck ≠ correctness" lesson.
+- **Lean discovery (cached per process):** `find_lean()` resolves a runnable Lean
+  via `LEAN` env → a real toolchain `lean` under the mathlas elan install
+  (`reference/downloads/elan/toolchains/<tc>/bin/lean`, invoked directly to avoid
+  the elan proxy's cwd warnings) → `elan which lean` → `lean` on `PATH`. A 120 s
+  timeout guards against a hang.
+- **Honest UNDETERMINED when Lean is absent (never a fake pass):** if no toolchain
+  is found, or no snippet is given, the verdict is `applies=False` with the
+  typecheck condition left **undetermined** (`satisfied=None`) and a clear note —
+  the prior stub behaviour, but only when Lean genuinely cannot run.
+- **Toolchain install (gitignored, removable):** elan + a recent Lean (the build
+  used **Lean 4.30.0**) into `reference/downloads/elan` — see the one-liner in the
+  README; deliberately **NOT** mathlib (too heavy, not needed for a bare-snippet
+  kernel check). Installed in ≈ 1 min here (~2.7 GB on disk).
+- **Server (`tool_verify_formal`):** now reports `lean_available`, `typechecks`,
+  `applies`, `checked` (True iff Lean actually ran and gave a definite verdict),
+  `stub` (the inverse), the kernel `detail`, and the caveat in `note`.
 
 ### Mapping — `map.py` (NO-LLM scaffold + optional BYO-LLM two-stage)
 - **`mapping_scaffold(problem, candidate)` [PRIMARY, no LLM]:** returns the
@@ -136,9 +199,11 @@ dependency-free stdio JSON-RPC MCP server** if `mcp` is absent — so it always 
   blindly prepended; and the checklist forces a **need-vs-guarantee fit** check,
   not mere coherence.
 
-### CLI — `cli.py` (`mathlas <number>` / `mathlas "<problem>"` / `mathlas mcp`)
-Auto-routes (**no LLM, no API key**): a numeric arg → the airtight constant path;
-a text arg → `search_existing_math` then prints the `mapping_scaffold` questions +
+### CLI — `cli.py` (`mathlas <number>` / `mathlas <sequence>` / `mathlas "<problem>"` / `mathlas mcp`)
+Auto-routes (**no LLM, no API key**): a single number → the airtight constant path;
+**≥ 2 integers** (`1,1,2,3,5,8` or `1 1 2 3 5 8`, `[]`/`()` ok) → the airtight OEIS
+`identify_sequence` path (`--oeis-dir DIR` to relocate the data); a text arg →
+`search_existing_math` then prints the `mapping_scaffold` questions +
 `applicability_checklist` for the top candidate (the data an AI reasons over),
 over the seed corpus or `--corpus DIR`; `mathlas mcp` runs the MCP server. Wired
 as `console_scripts` entry points (`mathlas`, `mathlas-mcp`).
@@ -151,15 +216,28 @@ as `console_scripts` entry points (`mathlas`, `mathlas-mcp`).
 - **Numeric benchmark** (`benchmarks/numeric_bench.py`): **recovery 8/8 (100%)**,
   **false-positive 0/3 (0%)** — both DoD targets met; the honesty gate holds
   against structureless irrationals (`sin(1)·log(7)` etc.). Airtight tier intact.
-- **MCP server** (`mathlas/server.py`): builds and **lists all 6 tools** under
-  *both* the official FastMCP SDK *and* the dependency-free stdio fallback; driven
-  end-to-end as a subprocess (a) via a real `mcp` stdio client and (b) via raw
+- **MCP server** (`mathlas/server.py`): builds and **lists all 7 tools** (incl.
+  `identify_sequence`) under *both* the official FastMCP SDK *and* the
+  dependency-free stdio fallback; driven end-to-end as a subprocess via raw
   JSON-RPC lines on the fallback — `initialize` / `tools/list` / `tools/call` all
   return correct responses, notifications correctly get no reply.
 - **`search_existing_math` + `verify_numeric` round-trip** on the built-in seed
   corpus: a query for the contraction/fixed-point result surfaces **Banach** top;
   `verify_numeric("…","pi**2/6")` returns verified (37 digits) and rejects
   `pi**2/7` — airtight check works through the tool layer.
+- **`identify_sequence` (OEIS, airtight):** with the local OEIS data present,
+  `[1,1,2,3,5,8,13,21] → A000045` (Fibonacci, found at offset 1) and
+  `[2,3,5,7,11,13] → A000040` (primes, top match) — over **396 329** local
+  sequences; index built once (≈ 16 s) then cached (sub-10 ms lookups). Catalan/
+  factorials/powers-of-2/squares also resolve to their canonical A-numbers; a
+  structureless run → honest UNIDENTIFIED. Verified through the MCP `tools/call`
+  layer and the CLI (comma- and space-separated).
+- **`verify_formal` (Lean, REAL kernel check):** with Lean 4.30.0 installed,
+  `theorem t : 1 + 1 = 2 := rfl` **typechecks** (`checked=True, applies=True`) and
+  `1 + 1 = 3 := rfl` is reported as a kernel type error (`applies=False`); a
+  hypothesis-bearing theorem (`Nat.add_le_add_right`) also typechecks. With Lean
+  forced unavailable → honest UNDETERMINED (`applies=False`, typecheck condition
+  `None`), **never a fake pass**. Verified through the MCP `tools/call` layer.
 - **No-LLM scaffolds:** `applicability_checklist` parses real statements into
   atomic preconditions + conclusion (bracket-comma protected: `Let (X,d) …` stays
   one clause; `If A and B, then C` → A, B, C correctly); `mapping_scaffold`
@@ -174,6 +252,13 @@ as `console_scripts` entry points (`mathlas`, `mathlas-mcp`).
 
 ## Citations (methods used)
 
+- **OEIS** — The On-Line Encyclopedia of Integer Sequences, OEIS Foundation Inc.,
+  `https://oeis.org`. *(data source for `identify_sequence`: the published
+  `stripped.gz`/`names.gz` bulk files, used under the OEIS end-user license;
+  matched exactly, locally — not their API.)*
+- **Lean 4 / elan** — de Moura & Ullrich, "The Lean 4 Theorem Prover and
+  Programming Language," CADE 2021; toolchain installed via `elan`
+  (`github.com/leanprover/elan`). *(the formal tier's real kernel typecheck.)*
 - **Qwen3-Embedding** — Zhang et al., "Qwen3 Embedding: Advancing Text Embedding
   and Reranking Through Foundation Models," arXiv:2506.05176 (2026). *(open MTEB
   SOTA; production embedder + the "embed meaning not notation" lesson.)*
@@ -203,12 +288,23 @@ as `console_scripts` entry points (`mathlas`, `mathlas-mcp`).
   studied for lessons (analysis in `docs/03`); their *dataset* (CC-BY/CC0) used as
   raw data. Their API/MCP/index/code are **not** a runtime dependency.
 
+## Delivered after the first cut (2026-06-05)
+
+- **OEIS sequence tier — DONE** (`mathlas/sequence.py`, MCP `identify_sequence`,
+  CLI sequence mode). Airtight exact term-match against a local OEIS copy; see the
+  module section above. Tested: `[1,1,2,3,5,8,13,21] → A000045`,
+  `[2,3,5,7,11,13] → A000040`.
+- **Formal Lean tier — DONE (real check)** (`verify_formal` runs the Lean kernel;
+  Lean 4.30.0 installed under `reference/downloads/elan`). Stub replaced; honest
+  UNDETERMINED only when Lean is genuinely unavailable. See the module section.
+
 ## Deliberately deferred (documented, not run)
 
 - **Full 9.2M Qwen3 index** — `scripts/build_index.py` (offline GPU; not run under
   the current GPU-sharing constraint).
-- **Formal Lean tier** — interface fixed; wire a LeanDojo/Loogle checker.
+- **Lean + mathlib** — only a *bare-snippet* kernel check is wired (no mathlib);
+  checking snippets that `import Mathlib` would need the (heavy) mathlib build.
+  A LeanDojo/Loogle premise-retrieval layer on top remains future work.
 - **Graph-rerank** — use the dataset's formal+informal dependency edges as a
   structure signal (the 2510.23637 result); higher value, needs a trained GNN.
-- **OEIS sequence tier** — the next numeric slice (`identify/sequence.py`).
 - **PyPI name** — `mathlas` is provisional; availability-check before publish.

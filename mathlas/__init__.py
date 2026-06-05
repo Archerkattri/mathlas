@@ -34,6 +34,11 @@ from .engine import identify, Result, Candidate
 from .provenance import Provenance, Novelty
 from .verify import verify_closed_form, VerifyResult
 
+# Integer-sequence domain (airtight EXACT term-match vs a local copy of OEIS;
+# no LLM, no network at call time). Heavy data load stays lazy inside the module.
+from .sequence import (identify_sequence, SequenceResult, SequenceMatch,
+                       OEISIndex)
+
 # Retrieval + scaffolds + verification tiers (NO LLM). ``solve`` pulls in
 # numpy/scipy (declared deps); the heavier retrieval corpus/embedder imports
 # stay lazy inside their modules.
@@ -54,6 +59,8 @@ __all__ = [
     "identify", "Result", "Candidate",
     "verify_closed_form", "VerifyResult",
     "verify_numeric_claim",
+    # integer sequences (airtight OEIS exact term-match)
+    "identify_sequence", "SequenceResult", "SequenceMatch", "OEISIndex",
     # provenance
     "Provenance", "Novelty",
     # search (no LLM)

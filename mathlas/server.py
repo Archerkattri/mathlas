@@ -10,9 +10,10 @@ verification, structured needs<->guarantees scaffolds, and provenance.
 Tools exposed
 -------------
   identify_constant(value, basis?)          airtight closed-form + provenance
+  identify_sequence(terms, max_results?)    airtight OEIS exact term-match
   search_existing_math(query, k, corpus_dir?) ranked candidate existing results
   verify_numeric(value, closed_form)        airtight digit-agreement verdict
-  verify_formal(statement, lean?)           Lean verdict (stub, clearly marked)
+  verify_formal(statement, lean?)           REAL Lean kernel typecheck (or honest UNDETERMINED)
   applicability_checklist(candidate_statement) the result's preconditions, structured
   mapping_scaffold(problem, candidate_statement) the needs<->guarantees questions
 
@@ -153,6 +154,32 @@ def tool_identify_constant(value: str, basis: Optional[List[str]] = None) -> Dic
     return out
 
 
+def tool_identify_sequence(terms: List[int], max_results: int = 5,
+                           data_dir: Optional[str] = None) -> Dict[str, Any]:
+    """Identify an integer sequence against a LOCAL copy of OEIS — airtight, NO LLM.
+
+    Hand it a list of integers; it returns the matching OEIS entries (A-number,
+    name, OEIS URL) by EXACT term match against the local OEIS data — the terms
+    occur (as a contiguous run, offset/subsequence-tolerant) in a stored sequence
+    or they do not. No fuzzy scoring, no model, no API key. If the OEIS data files
+    are not present, returns an honest UNDETERMINED note (never a fake match).
+    Results rank by A-number (OEIS's canonical ordering); each match reports the
+    offset where the run was found (offset 0 == your terms are a leading prefix)."""
+    from .sequence import identify_sequence
+    res = identify_sequence(terms, max_results=int(max_results), data_dir=data_dir)
+    return {
+        "query": res.query,
+        "identified": res.identified,
+        "matches": [
+            {"a_number": m.a_number, "name": m.name, "url": m.url,
+             "offset": m.offset, "exact_prefix": m.exact_prefix}
+            for m in res.matches
+        ],
+        "data_dir": res.data_dir,
+        "note": res.note,
+    }
+
+
 def tool_search_existing_math(query: str, k: int = 10,
                               corpus_dir: Optional[str] = None,
                               corpus_limit: int = 5000) -> Dict[str, Any]:
@@ -210,22 +237,35 @@ def tool_verify_numeric(value: str, closed_form: str,
 
 
 def tool_verify_formal(statement: str, lean: Optional[str] = None) -> Dict[str, Any]:
-    """Formal (Lean) applicability verdict. STUB — clearly marked (NO LLM).
+    """Formal (Lean) verify: REALLY runs the Lean kernel on a snippet (NO LLM).
 
-    Interface is fixed so a real LeanDojo/Loogle kernel check slots in; until a
-    Lean toolchain is wired, this returns an UNDETERMINED verdict and never
-    claims a snippet was kernel-checked."""
-    from .verify_apply import verify_formal
-    verdict = verify_formal(lean)
+    If a Lean toolchain is installed and a ``lean`` snippet is given, this runs the
+    actual Lean type-checker and reports whether it TYPECHECKS (a real kernel
+    check). With no snippet, or no Lean toolchain, it returns an HONEST
+    UNDETERMINED verdict — never a fake pass. Honest caveat: a typecheck proves the
+    snippet is well-typed and its proof term checks, NOT that the stated theorem is
+    the right applicability claim for ``statement`` (typecheck != proves-it-applies;
+    that mapping is the calling AI's job)."""
+    from .verify_apply import verify_formal, find_lean
+    lean_exe = find_lean()
+    verdict = verify_formal(lean, lean_exe=lean_exe)
+    cond = verdict.conditions[0] if verdict.conditions else None
+    # "checked" == we actually ran Lean and got a definite True/False typecheck.
+    really_checked = bool(lean) and bool(lean_exe) and (
+        cond is not None and cond.satisfied is not None)
     return {
         "statement": statement,
         "lean_provided": bool(lean),
+        "lean_available": bool(lean_exe),
         "tier": verdict.tier.value,
+        "typechecks": (cond.satisfied if cond is not None else None),
         "applies": verdict.applies,
         "confidence": verdict.confidence,
-        "checked": False,
-        "stub": True,
-        "note": verdict.note + " (STUB: no Lean toolchain; not kernel-checked.)",
+        "checked": really_checked,
+        "stub": not really_checked,
+        "detail": (cond.evidence if cond is not None else ""),
+        "failure": verdict.failure,
+        "note": verdict.note,
     }
 
 
@@ -278,6 +318,15 @@ _TOOLS: List[Dict[str, Any]] = [
          "basis": {"type": "array", "items": {"type": "string"},
                    "description": "optional constant basis, e.g. [\"pi\",\"e\",\"catalan\"]"},
      }, "required": ["value"]},
+    {"name": "identify_sequence", "fn": tool_identify_sequence,
+     "description": tool_identify_sequence.__doc__,
+     "params": {
+         "terms": {"type": "array", "items": {"type": "integer"},
+                   "description": "the integer sequence to identify, e.g. "
+                                  "[1,1,2,3,5,8,13,21] (give >= 4 terms)"},
+         "max_results": {"type": "integer", "description":
+                         "max OEIS matches to return (default 5)"},
+     }, "required": ["terms"]},
     {"name": "search_existing_math", "fn": tool_search_existing_math,
      "description": tool_search_existing_math.__doc__,
      "params": {
@@ -334,12 +383,14 @@ def build_fastmcp():
         instructions=(
             "mathlas is a tool you (the AI) use; it never calls an LLM and needs "
             "no API key. It gives you: identify_constant (airtight closed forms), "
-            "search_existing_math (find existing theorems), verify_numeric "
-            "(airtight digit check), verify_formal (Lean stub), "
-            "applicability_checklist and mapping_scaffold (structured "
-            "needs<->guarantees scaffolds you reason over). Typical flow: "
-            "search_existing_math -> mapping_scaffold + applicability_checklist "
-            "-> you judge applicability -> verify_numeric for any numeric claim."),
+            "identify_sequence (airtight OEIS exact term-match for integer "
+            "sequences), search_existing_math (find existing theorems), "
+            "verify_numeric (airtight digit check), verify_formal (REAL Lean "
+            "kernel typecheck, or honest UNDETERMINED), applicability_checklist "
+            "and mapping_scaffold (structured needs<->guarantees scaffolds you "
+            "reason over). Typical flow: search_existing_math -> mapping_scaffold "
+            "+ applicability_checklist -> you judge applicability -> verify_numeric "
+            "for any numeric claim."),
     )
     # Register each tool. FastMCP introspects the wrapped fn's signature/types.
     for spec in _TOOLS:

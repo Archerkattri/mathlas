@@ -2,7 +2,8 @@
 
 > **A tool FOR an AI — no API key, free.** Plug it into Claude Code, Cursor, or
 > any MCP client. The **AI is the brain**; mathlas gives it the capabilities it
-> lacks: **search over existing math**, **airtight numeric/formal verification**,
+> lacks: **search over existing math**, **integer-sequence (OEIS) identification**,
+> **airtight numeric/formal verification** (incl. a real Lean kernel check),
 > structured **needs↔guarantees scaffolds**, and honest **provenance** (never
 > "novel"). Apache-2.0, mostly-pure-Python.
 
@@ -25,9 +26,10 @@ search_existing_math ─▶ mapping_scaffold + applicability_checklist ─▶ (A
 | Tool | What it does | Airtight? |
 |---|---|---|
 | `identify_constant(value, basis?)` | a real value → a known closed form + provenance | ✅ independent high-precision re-eval |
+| `identify_sequence(terms, max_results?)` | an integer sequence → matching **OEIS** entries (A-number, name, URL) by exact term-match | ✅ exact match vs a local OEIS copy (no fuzzy/LLM) |
 | `search_existing_math(query, k, corpus_dir?)` | query → ranked candidate **existing** results (our own dense+BM25+RRF index) | retrieval |
 | `verify_numeric(value, closed_form)` | digit-agreement verdict | ✅ different engine, higher precision |
-| `verify_formal(statement, lean?)` | Lean verdict | stub (clearly marked; interface ready) |
+| `verify_formal(statement, lean?)` | runs the **real Lean kernel** on a snippet → typechecks? (else honest UNDETERMINED) | ✅ real kernel check when a snippet+Lean are present (`typecheck ≠ proves-it-applies`) |
 | `applicability_checklist(candidate_statement)` | the result's hypotheses as an atomic **checklist** for the AI to check | heuristic parse, no LLM |
 | `mapping_scaffold(problem, candidate_statement)` | the **needs↔guarantees** questions + fill-in template for the AI | structured, no LLM |
 
@@ -46,10 +48,25 @@ pip install -e '.[embed]'        # + sentence-transformers/torch, for the Qwen3 
 claude mcp add mathlas -- python -m mathlas.server
 ```
 
-That's it — mathlas now appears as six tools the agent can call. (Cursor / any
+That's it — mathlas now appears as seven tools the agent can call. (Cursor / any
 MCP client: point it at the same `python -m mathlas.server` stdio command.) The
 server prefers the official `mcp` SDK and **falls back to a dependency-free stdio
 JSON-RPC server** if `mcp` isn't installed, so it always runs.
+
+> **Data tools (optional, gitignored, removable):** `identify_sequence` needs a
+> local copy of OEIS, and `verify_formal` needs a Lean toolchain. Both degrade
+> honestly (a clear "data/toolchain not available" note, never a fake answer) if
+> absent. To enable them:
+> ```bash
+> # OEIS (~40 MB total) — for identify_sequence
+> mkdir -p reference/downloads/oeis
+> curl -sSL -o reference/downloads/oeis/stripped.gz https://oeis.org/stripped.gz
+> curl -sSL -o reference/downloads/oeis/names.gz    https://oeis.org/names.gz
+> # Lean toolchain (~hundreds of MB) — for a real verify_formal kernel check
+> export ELAN_HOME="$PWD/reference/downloads/elan"
+> curl -sSL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+>   | sh -s -- -y --default-toolchain leanprover/lean4:stable --no-modify-path
+> ```
 
 ### A worked example — an AI using the tools
 
@@ -81,6 +98,10 @@ numeric check; **the AI did the judging**. No LLM was called *inside* mathlas.
 mathlas 1.6449340668482264364724151666460251892
 #   1.64493406684823 -> pi**2/6  [known_form, verified 51 digits]
 
+# Sequence: paste an integer sequence, get the matching OEIS entries (airtight)
+mathlas 1,1,2,3,5,8,13,21       #   A000045  Fibonacci numbers ...  https://oeis.org/A000045
+mathlas 2 3 5 7 11 13           #   A000040  The prime numbers.     https://oeis.org/A000040
+
 # Problem: search existing math + print the scaffold/checklist an AI reasons over
 mathlas "a bounded sequence has a convergent subsequence" --k 5
 mathlas "<problem>" --corpus reference/theorem-search-dataset --limit 5000   # real index
@@ -89,8 +110,10 @@ mathlas mcp                                                                   # 
 
 ```python
 import mpmath
-from mathlas import identify, mapping_scaffold, applicability_checklist, verify_closed_form
+from mathlas import (identify, identify_sequence, mapping_scaffold,
+                     applicability_checklist, verify_closed_form)
 print(identify(mpmath.zeta(2)))            # 1.64493406684823 -> pi**2/6 [known_form, verified 51 digits]
+print(identify_sequence([1,1,2,3,5,8,13,21]).matches[1].a_number)  # 'A000045' (Fibonacci; needs local OEIS data)
 
 from mathlas.server import tool_search_existing_math
 hits = tool_search_existing_math("contraction unique fixed point", k=3)["candidates"]
@@ -103,8 +126,15 @@ ok   = verify_closed_form(mpmath.mpf("1.6449340668482264"), "pi**2/6").ok   # ai
 
 - **Numeric: recovery 8/8, false-positive 0/3** (`benchmarks/numeric_bench.py`).
 - **MCP server**: starts under both the official SDK *and* the dependency-free
-  fallback; lists all six tools; a `search_existing_math` + `verify_numeric`
+  fallback; lists all **seven** tools; a `search_existing_math` + `verify_numeric`
   round-trip succeeds on the built-in seed corpus.
+- **Sequences (OEIS)**: with the local OEIS data present, `identify_sequence`
+  exact-matches `[1,1,2,3,5,8,13,21] → A000045` (Fibonacci) and
+  `[2,3,5,7,11,13] → A000040` (primes), over ~396k local sequences; the index is
+  built once and cached. With no data → an honest "data not available" note.
+- **Formal (Lean)**: `verify_formal` runs the **real Lean kernel** — it confirms
+  `theorem t : 1 + 1 = 2 := rfl` **typechecks** and reports `1 + 1 = 3 := rfl` as a
+  type error. With no Lean toolchain → honest UNDETERMINED (never a fake pass).
 - **Retrieval**: paper-level Hit@20 = 15/15 on the test subset, hashing-embedder
   floor (`scripts/eval_retrieval.py`); production uses Qwen3 + the full index
   (`scripts/build_index.py`, offline GPU).

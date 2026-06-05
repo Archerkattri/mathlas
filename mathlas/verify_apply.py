@@ -56,10 +56,14 @@ forces need-vs-guarantee fit, not mere coherence.
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
+import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 
 class Tier(str, Enum):
@@ -118,22 +122,181 @@ def verify_numeric_claim(value, candidate_expr: str, *,
 
 
 # --------------------------------------------------------------------------- #
-# FORMAL tier -- Lean kernel check (stub; interface fixed for a real toolchain).
+# FORMAL tier -- REAL Lean kernel check (no LLM). Runs the Lean type-checker on a
+# provided snippet and reports whether it TYPECHECKS. The honest caveat stands:
+# typechecks != proves-it-applies (the snippet's *statement* must be the
+# applicability claim; that mapping is the AI's job, not Lean's).
 # --------------------------------------------------------------------------- #
-def verify_formal(lean_snippet: Optional[str]) -> ApplyVerdict:
-    """Kernel-check a Lean term establishing applicability. Stubbed: returns an
-    undetermined verdict unless a checker is wired in. Kept so the cascade has a
-    real formal slot (build on LeanDojo/Loogle when a toolchain is present).
-    Remember 'typecheck != correctness': a real impl must check that the term
-    proves the *applicability claim*, not merely that something compiles."""
+#: Caveat threaded through every real verdict -- a kernel typecheck proves the
+#: snippet is well-typed and its proof term checks, NOT that the theorem stated is
+#: the right applicability claim. (typecheck != proves-it-applies.)
+_TYPECHECK_CAVEAT = ("Caveat: a Lean typecheck proves the snippet is well-typed "
+                     "and its proof term passes the kernel -- it does NOT prove "
+                     "the stated theorem is the right applicability claim "
+                     "(typecheck != proves-it-applies; the AI owns that mapping).")
+
+#: How long to let Lean run before giving up (seconds). A bare snippet (no
+#: mathlib) typechecks in well under this; the cap guards against a hang.
+LEAN_TIMEOUT_S = 120
+
+# Cache the resolved Lean executable path (or False if none) so discovery -- which
+# may shell out to ``elan which`` -- runs at most once per process.
+_LEAN_EXE_CACHE: "Optional[object]" = None
+
+
+def _candidate_lean_dirs() -> List[str]:
+    """Directories under which a directly-runnable (real, non-proxy) ``lean`` may
+    live. The elan install used by mathlas keeps toolchains under
+    ``reference/downloads/elan/toolchains/<tc>/bin``."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.dirname(here)
+    roots = [
+        os.environ.get("ELAN_HOME", ""),
+        os.path.join(repo_root, "reference", "downloads", "elan"),
+        os.path.join(os.getcwd(), "reference", "downloads", "elan"),
+    ]
+    dirs: List[str] = []
+    for root in roots:
+        if not root:
+            continue
+        tc = os.path.join(root, "toolchains")
+        if os.path.isdir(tc):
+            for name in sorted(os.listdir(tc)):
+                b = os.path.join(tc, name, "bin")
+                if os.path.isfile(os.path.join(b, "lean")):
+                    dirs.append(b)
+    return dirs
+
+
+def find_lean() -> Optional[str]:
+    """Locate a runnable Lean executable, or None. NO LLM, NO network.
+
+    Order: ``LEAN`` env var -> a real toolchain ``lean`` under the mathlas elan
+    install (preferred: invoking it directly avoids the elan proxy's cwd
+    warnings) -> ``elan which lean`` -> ``lean`` on PATH. Cached per process."""
+    global _LEAN_EXE_CACHE
+    if _LEAN_EXE_CACHE is not None:
+        return _LEAN_EXE_CACHE or None  # False -> None
+
+    found: Optional[str] = None
+    env_lean = os.environ.get("LEAN")
+    if env_lean and os.path.isfile(env_lean) and os.access(env_lean, os.X_OK):
+        found = env_lean
+    if not found:
+        for b in _candidate_lean_dirs():
+            cand = os.path.join(b, "lean")
+            if os.access(cand, os.X_OK):
+                found = cand
+                break
+    if not found:
+        # Ask elan (env or PATH) to resolve the active toolchain's lean.
+        elan = None
+        elan_home = os.environ.get("ELAN_HOME", "")
+        if elan_home:
+            c = os.path.join(elan_home, "bin", "elan")
+            if os.access(c, os.X_OK):
+                elan = c
+        elan = elan or shutil.which("elan")
+        if elan:
+            try:
+                out = subprocess.run([elan, "which", "lean"], capture_output=True,
+                                     text=True, timeout=30)
+                p = out.stdout.strip()
+                if out.returncode == 0 and p and os.path.isfile(p):
+                    found = p
+            except (OSError, subprocess.SubprocessError):
+                pass
+    if not found:
+        found = shutil.which("lean")
+
+    _LEAN_EXE_CACHE = found or False
+    return found
+
+
+def lean_typecheck(lean_snippet: str, *, lean_exe: Optional[str] = None,
+                   timeout_s: int = LEAN_TIMEOUT_S) -> Tuple[Optional[bool], str]:
+    """Run Lean on ``lean_snippet`` and report whether it TYPECHECKS. NO LLM.
+
+    Returns ``(ok, detail)`` where ``ok`` is True (kernel-checked clean), False
+    (Lean reported errors), or None (could not run Lean -> undetermined). The real
+    Lean kernel verifies any proof term in the snippet, so a clean exit is a
+    genuine type/proof check, not a guess."""
+    exe = lean_exe or find_lean()
+    if not exe:
+        return None, "no Lean toolchain found"
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile("w", suffix=".lean", delete=False,
+                                         encoding="utf-8") as fh:
+            fh.write(lean_snippet)
+            if not lean_snippet.endswith("\n"):
+                fh.write("\n")
+            tmp_path = fh.name
+        try:
+            proc = subprocess.run([exe, tmp_path], capture_output=True, text=True,
+                                  timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            return None, f"Lean timed out after {timeout_s}s"
+        out = (proc.stdout + proc.stderr).strip()
+        # Lean exits 0 and is silent on a clean typecheck; nonzero + an 'error:'
+        # diagnostic on failure. Treat any 'error:' as a failure even if (rarely)
+        # the exit code is 0, and surface warnings without failing.
+        has_error = bool(re.search(r"\berror:", out))
+        if proc.returncode == 0 and not has_error:
+            return True, (out or "kernel typecheck OK (no diagnostics)")
+        return False, (out or f"lean exited {proc.returncode}")
+    except OSError as e:
+        return None, f"could not run Lean ({e})"
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
+def verify_formal(lean_snippet: Optional[str], *,
+                  lean_exe: Optional[str] = None) -> ApplyVerdict:
+    """Kernel-check a Lean snippet (REAL check when Lean is installed; NO LLM).
+
+    If a Lean toolchain is available and a snippet is given, this actually runs the
+    Lean type-checker and returns a real verdict (typechecks => applies True with
+    full confidence; Lean errors => applies False). If no snippet is given, or no
+    Lean toolchain is found, it returns an HONEST undetermined verdict -- never a
+    fake pass. Remember: a typecheck proves the snippet is well-typed and its proof
+    term checks, NOT that the stated theorem is the right applicability claim
+    (typecheck != proves-it-applies; the AI owns that mapping)."""
     if not lean_snippet:
-        return ApplyVerdict(tier=Tier.FORMAL, applies=False, confidence=0.0,
-                            note="no Lean snippet provided; formal tier skipped")
+        exe = lean_exe or find_lean()
+        where = f" (Lean available at {exe})" if exe else " (no Lean toolchain found)"
+        return ApplyVerdict(
+            tier=Tier.FORMAL, applies=False, confidence=0.0,
+            note="no Lean snippet provided; formal tier skipped" + where)
+
+    ok, detail = lean_typecheck(lean_snippet, lean_exe=lean_exe)
+    if ok is None:
+        # Could not run Lean -> honest UNDETERMINED (the stub behaviour, but only
+        # when Lean genuinely is not runnable; never a fake pass).
+        return ApplyVerdict(
+            tier=Tier.FORMAL, applies=False, confidence=0.0,
+            conditions=[Condition(text="Lean snippet typechecks",
+                                  satisfied=None, evidence=detail)],
+            failure=None,
+            note=("UNDETERMINED: could not run the Lean kernel check (" + detail
+                  + "). Install the Lean toolchain to enable a real check "
+                  "(see docs/04_build.md). " + _TYPECHECK_CAVEAT))
+    if ok:
+        return ApplyVerdict(
+            tier=Tier.FORMAL, applies=True, confidence=1.0,
+            conditions=[Condition(text="Lean snippet typechecks",
+                                  satisfied=True, evidence=detail)],
+            note=("REAL Lean kernel check: snippet TYPECHECKS. " + _TYPECHECK_CAVEAT))
     return ApplyVerdict(
         tier=Tier.FORMAL, applies=False, confidence=0.0,
-        note="Lean checker not installed in this environment; snippet not "
-             "kernel-checked (interface ready for LeanDojo/Loogle).",
-    )
+        conditions=[Condition(text="Lean snippet typechecks",
+                              satisfied=False, evidence=detail)],
+        failure="Lean reported type/elaboration errors",
+        note=("REAL Lean kernel check: snippet does NOT typecheck. " + _TYPECHECK_CAVEAT))
 
 
 # --------------------------------------------------------------------------- #
@@ -452,5 +615,5 @@ def _parse_informal(raw: str) -> ApplyVerdict:
 __all__ = [
     "Tier", "Condition", "ApplyVerdict", "Checklist",
     "verify_numeric_claim", "verify_formal", "applicability_checklist",
-    "verify_informal",
+    "verify_informal", "find_lean", "lean_typecheck",
 ]
