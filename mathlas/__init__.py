@@ -49,6 +49,18 @@ from .verify_apply import (applicability_checklist, Checklist,
                            ApplyVerdict, Tier, Condition)
 from .retrieve import Retriever, Candidate as RetrievedCandidate
 
+# DISCOVERY + WEB-AUGMENTATION layer (NO LLM, no network, no API key).
+#   ramanujan  -- PSLQ-over-richer-basis + Ramanujan-Machine continued-fraction
+#                 conjectures, each numerically VERIFIED (provenance = conjecture).
+#   funsearch  -- the deterministic HARNESS for AI-generated program search
+#                 (sandboxed evaluate + on-disk MAP-Elites DB + few-shot status).
+#   webaug     -- search_directive (tell the AI what to web-search) + add_finding
+#                 (ingest a web result into the live corpus with NO model load).
+from .ramanujan import (conjecture, ConjectureResult, integer_relations,
+                        continued_fractions, simple_continued_fraction)
+from .webaug import (search_directive, SearchDirective, add_finding,
+                     AddFindingResult, search_findings, load_findings)
+
 # OPTIONAL bring-your-own-LLM standalone helper (secondary; no vendor SDK).
 from .solve import solve, Solution, AppliedResult
 from .llm import LLM, EchoLLM
@@ -69,6 +81,11 @@ __all__ = [
     "mapping_scaffold", "MappingScaffold",
     "applicability_checklist", "Checklist",
     "verify_formal", "ApplyVerdict", "Tier", "Condition",
+    # discovery + web-augmentation (no LLM, no network)
+    "conjecture", "ConjectureResult", "integer_relations",
+    "continued_fractions", "simple_continued_fraction",
+    "search_directive", "SearchDirective", "add_finding", "AddFindingResult",
+    "search_findings", "load_findings",
     # optional bring-your-own-LLM standalone path (secondary)
     "solve", "Solution", "AppliedResult",
     "map_candidates", "extract_signature", "Mapping", "Signature",

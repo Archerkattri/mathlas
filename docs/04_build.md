@@ -22,7 +22,7 @@
 | `verify_apply` informal tier **judges via LLM** | `applicability_checklist(candidate)` returns the result's atomic preconditions as a **checklist** the AI marks — **no LLM** |
 | `solve(problem, retr, llm)` is the interface | the **MCP server** (`server.py`) + plain library functions are the interface; `solve()` is a **secondary** bring-your-own-LLM convenience (default `EchoLLM`, no vendor) |
 | `AnthropicLLM`, `pip install '.[llm]'`, API key | **deleted.** Core (numeric + retrieval + verify + MCP) runs with **ZERO LLM, ZERO API key** |
-| — | **MCP server** exposes 7 AI-callable tools (`identify_constant`, **`identify_sequence`**, `search_existing_math`, `verify_numeric`, `verify_formal`, `applicability_checklist`, `mapping_scaffold`) |
+| — | **MCP server** exposes 13 AI-callable tools: the 7 core (`identify_constant`, **`identify_sequence`**, `search_existing_math`, `verify_numeric`, `verify_formal`, `applicability_checklist`, `mapping_scaffold`) + the 6-tool **discovery/web-augmentation layer** (`conjecture_relation`, `funsearch_evaluate`, `funsearch_register`, `funsearch_status`, `search_directive`, `add_finding`) |
 
 Register in Claude Code: `claude mcp add mathlas -- python -m mathlas.server`.
 The server prefers the official `mcp` SDK (FastMCP) and **falls back to a
@@ -88,11 +88,13 @@ dependency-free stdio JSON-RPC MCP server** if `mcp` is absent — so it always 
   deliberately NOT run here (resource limits); validation uses a small subset.
 
 ### MCP server — `server.py` (the primary, AI-callable interface) **[NEW]**
-- Exposes **seven** tools, **all NO-LLM**, returning JSON data the calling AI
-  reasons over: `identify_constant`, `identify_sequence`, `search_existing_math`,
-  `verify_numeric`, `verify_formal`, `applicability_checklist`, `mapping_scaffold`.
-  The tool bodies are plain functions (single source of truth); both server
-  backends call them.
+- Exposes **thirteen** tools, **all NO-LLM**, returning JSON data the calling AI
+  reasons over: the 7 core (`identify_constant`, `identify_sequence`,
+  `search_existing_math`, `verify_numeric`, `verify_formal`,
+  `applicability_checklist`, `mapping_scaffold`) + the 6 discovery/web-augmentation
+  tools (`conjecture_relation`, `funsearch_evaluate`, `funsearch_register`,
+  `funsearch_status`, `search_directive`, `add_finding`). The tool bodies are plain
+  functions (single source of truth); both server backends call them.
 - **Two backends, one wire protocol:** prefers the official **`mcp` SDK
   (FastMCP)**; if `mcp` is not installed, falls back to a **dependency-free stdio
   JSON-RPC** server (`serve_stdio`/`_dispatch`) implementing `initialize` /
@@ -199,6 +201,90 @@ dependency-free stdio JSON-RPC MCP server** if `mcp` is absent — so it always 
   blindly prepended; and the checklist forces a **need-vs-guarantee fit** check,
   not mere coherence.
 
+### DISCOVERY + WEB-AUGMENTATION layer — `ramanujan.py`, `funsearch.py`, `webaug.py` **[NEW, 2026-06-06]**
+
+The "discovery + web-augmentation" layer — three more capabilities, all **NO LLM,
+no network inside mathlas, no API key**, each returning DATA for the calling AI.
+Built CPU-only while the 8B index build ran (did **not** touch the GPU,
+`corpus.py`/`embed.py`, or `index_build/`). The INVARIANT holds: mathlas never
+calls an LLM; numeric stays 8/8; the original 7 tools are unchanged.
+
+**1) Ramanujan Machine — `ramanujan.py` / `conjecture_relation(value, max_terms?, cf_depth?)`.**
+Goes *beyond* `identify_constant`'s flat basis with two channels, each gated by an
+independent high-precision re-verification (reusing `verify.py`'s discipline):
+- **(a) PSLQ over a RICHER basis** — we build the basis *vector* ourselves (the
+  value, `x²`, the named atoms `pi,e,γ,Catalan,log2,log3,√2,√3,√5,ζ(3),ζ(5)`,
+  their squares, pairwise products, and `1`) and run `mpmath.pslq` directly (vs
+  `identify`'s flat name list), then reconstruct the integer relation as `x`'s
+  closed form and re-verify it in **sympy** at higher precision. Recovers e.g.
+  `ζ(2) → π²/6` (64 digits).
+- **(b) Ramanujan-Machine continued fraction** — a bounded brute-force over TINY
+  integer polynomials `aₙ=a₀+a₁n` (deg ≤ 1, positive leading), `bₙ=b₀+b₁n+b₂n²`
+  (deg ≤ 2) whose **generalized CF** `a₀ + b₁/(a₁ + b₂/(a₂ + …))` (backward
+  recurrence) matches a simple rational *image* `(px+q)/(rx+s)` of the constant.
+  Each hit is locked by a **deeper** re-evaluation (depth×2, higher dps) before
+  it is reported. Recovers the RM seed `π`: `aₙ=2n+1, bₙ=n² ⇒ 4/π` (60+ digits)
+  and Euler's `aₙ=n+1, bₙ=n+1 ⇒ e−1`.
+- **(b′) Simple CF + pattern** — the simple CF `[a₀; a₁, a₂, …]`, with pattern
+  recognition (period-1/2 for quadratic irrationals; the e-type arithmetic run),
+  verified by rebuilding the convergent. `e → [2;1,2,1,1,4,1,1,6,…]` (pattern
+  named), `φ → [1;1,1,…]`, `√2 → [1;2,2,…]`, `√3 → [1;1,2,…]`.
+
+Provenance is a **new** `Novelty.CONJECTURED_RELATION` (`"conjectured_relation"`)
+— honestly a *numerically-verified conjecture, NOT a proof* (the AI can take it to
+`verify_formal` / a human / the literature). Cites **Raayoni et al., *Nature* 590
+(2021)** (the Ramanujan Machine) + **Ferguson-Bailey-Arno, *Math. Comp.* 68
+(1999)** (PSLQ).
+
+**2) FunSearch harness — `funsearch.py` / `funsearch_evaluate` + `funsearch_register` + `funsearch_status`.**
+The **harness half only** of FunSearch — the CALLING AI is the program generator;
+mathlas scores and stores, **no LLM**:
+- **`evaluate`** runs a candidate program in a **sandboxed subprocess** — fresh
+  `python -I -S` (isolated, no site), hard wall-clock `timeout`, the `socket`
+  module stubbed out (no network), POSIX `RLIMIT_CPU`/`RLIMIT_AS` (CPU + memory),
+  cwd in a throwaway temp dir. The candidate's own stdout is ignored; a single
+  JSON result line is parsed. A signal-kill (e.g. `SIGXCPU` from the rlimit) is
+  reported as an effective timeout. The program is AI-written and **not trusted**;
+  the timeout is the primary guard, the rest defence-in-depth.
+- **`register`** stores a scored program in an on-disk **MAP-Elites** DB
+  (Mouret & Clune 2015) under `reference/downloads/funsearch/<problem>.json`
+  (gitignored): one elite per behaviour cell + the global best, atomic writes.
+- **`status`** returns the best program(s) + score + `few_shot_context` — the
+  FunSearch best-shot prompt assembled as **DATA** the AI writes the next, better
+  variant from (mathlas never sends it to a model).
+- Ships two runnable scorers so the loop closes end-to-end: **`cap_set`** (size of
+  a cap set in ℤ₃ⁿ — no three distinct points sum to 0 mod 3; FunSearch's headline
+  result) and **`online_bin_packing`** (an online heuristic; score = −avg bins).
+  Tested: cap_set starter 5 → a greedy 16 (known max 20, headroom for the AI);
+  buggy / wrong-entry / infinite-loop / network programs all fail safely.
+
+Cites **Romera-Paredes et al., *Nature* 625 (2024)** (FunSearch) + **OpenEvolve**
+(open prior art) + **Mouret & Clune (2015)** (MAP-Elites).
+
+**3) Web-augmented retrieval — `webaug.py` / `search_directive(problem)` + `add_finding(...)`.**
+The local corpus is finite; the AI has the web. mathlas makes **no web call** — it
+tells the AI *what* to search and ingests what comes back:
+- **`search_directive`** reuses the NO-LLM needs↔guarantees signature
+  (`map._heuristic_signature`) + transparent domain cues to return arXiv query
+  strings, candidate sub-fields + their **arXiv categories** (`math.NT`/`math.CO`/…),
+  named methods/inequalities/theorems to look for, and which OTHER mathlas tools to
+  run (`identify_constant`/`conjecture_relation` when it spots a high-precision
+  decimal, `identify_sequence` for an integer list, etc.).
+- **`add_finding(statement, slogan, source, name?)`** appends a web-found result to
+  the **live corpus** — a gitignored JSONL sidecar
+  (`reference/downloads/findings.jsonl`) — through the **BM25/sparse channel +
+  meta, with NO embedding-model load** (THE KEY CONSTRAINT: growing the index must
+  not load the 8B per finding, so it works on any machine). It is retrievable
+  **immediately**: `tool_search_existing_math` now RRF-fuses live findings (pure
+  BM25 over the sidecar, cached by mtime) into its results, labelled provenance
+  `web_added` (a new `Novelty.WEB_ADDED`). A dense vector is attached **only if** a
+  Qwen3 index is *already* loaded in-process (we sniff the server's retriever cache
+  and reuse its encoder — never construct a model); otherwise dense is skipped.
+- **Batch dense reindex (documented, deferred):** `scripts/reindex_findings.py`
+  loads the embedder **once** on a GPU box and fills in `dense_vec` for the backlog
+  of findings that lack one (idempotent/resumable; `--dry-run` loads no model).
+  This is the only place a model is loaded for findings.
+
 ### CLI — `cli.py` (`mathlas <number>` / `mathlas <sequence>` / `mathlas "<problem>"` / `mathlas mcp`)
 Auto-routes (**no LLM, no API key**): a single number → the airtight constant path;
 **≥ 2 integers** (`1,1,2,3,5,8` or `1 1 2 3 5 8`, `[]`/`()` ok) → the airtight OEIS
@@ -216,15 +302,31 @@ as `console_scripts` entry points (`mathlas`, `mathlas-mcp`).
 - **Numeric benchmark** (`benchmarks/numeric_bench.py`): **recovery 8/8 (100%)**,
   **false-positive 0/3 (0%)** — both DoD targets met; the honesty gate holds
   against structureless irrationals (`sin(1)·log(7)` etc.). Airtight tier intact.
-- **MCP server** (`mathlas/server.py`): builds and **lists all 7 tools** (incl.
-  `identify_sequence`) under *both* the official FastMCP SDK *and* the
-  dependency-free stdio fallback; driven end-to-end as a subprocess via raw
-  JSON-RPC lines on the fallback — `initialize` / `tools/list` / `tools/call` all
-  return correct responses, notifications correctly get no reply.
+- **MCP server** (`mathlas/server.py`): builds and **lists all 13 tools** under
+  *both* the official FastMCP SDK *and* the dependency-free stdio fallback; driven
+  end-to-end as a subprocess via raw JSON-RPC lines on the fallback —
+  `initialize` / `tools/list` / `tools/call` all return correct responses,
+  notifications correctly get no reply.
 - **`search_existing_math` + `verify_numeric` round-trip** on the built-in seed
   corpus: a query for the contraction/fixed-point result surfaces **Banach** top;
   `verify_numeric("…","pi**2/6")` returns verified (37 digits) and rejects
   `pi**2/7` — airtight check works through the tool layer.
+- **Discovery + web-augmentation layer (CPU-only, no key, no GPU):**
+  - `conjecture_relation` over the MCP wire on `e` returns the **verified** e-type
+    simple CF `[2;1,2,1,1,4,1,1,6,…]` (pattern recognised) + the generalized CFs
+    `e−1` and (on `π`) `4/π` to 60+ digits, and PSLQs `ζ(2) → π²/6` (64 digits) over
+    the richer basis; provenance `conjectured_relation` (honest: verified, not proved).
+  - `funsearch_evaluate` sandbox-scores the cap_set starter (5) and a greedy
+    variant (16; max 20), with **timeout / network-block / buggy / wrong-entry**
+    all failing safely; `funsearch_register` → MAP-Elites DB + global-best report;
+    `funsearch_status` → best program + few-shot context. Full loop runs end-to-end
+    over the wire on both shipped problems.
+  - `search_directive("evaluate sum 1/n^4")` returns sub-fields (analysis / number
+    theory / special functions), arXiv categories, named results, and suggests
+    `conjecture_relation`; `add_finding(...)` appends a result **with no model load**
+    (`dense_added=False`), and it is then retrieved via `search_existing_math`
+    (RRF-fused, provenance `web_added`). A dense vector is added only when a
+    retriever is already resident (verified by reusing a loaded hashing embedder).
 - **`identify_sequence` (OEIS, airtight):** with the local OEIS data present,
   `[1,1,2,3,5,8,13,21] → A000045` (Fibonacci, found at offset 1) and
   `[2,3,5,7,11,13] → A000040` (primes, top match) — over **396 329** local
@@ -284,6 +386,21 @@ as `console_scripts` entry points (`mathlas`, `mathlas-mcp`).
   beats one-shot. *(map.py design.)*
 - **REAL-Prover** — arXiv:2505.20613 (2025); **LeanDojo** — arXiv:2306.15626
   (2023). *(retrieval-augmented Lean proving; formal-tier references.)*
+- **Ramanujan Machine** — Raayoni, Gottlieb, Manor, Pisha, Harris, Mendlovic,
+  Haviv, Hadad & Kaminer, "Generating conjectures on fundamental constants with the
+  Ramanujan Machine," *Nature* 590, 67-73 (2021). *(the continued-fraction /
+  polynomial-recurrence conjecture form in `ramanujan.py`.)*
+- **PSLQ** — Ferguson, Bailey & Arno, "Analysis of PSLQ, an integer relation
+  finding algorithm," *Math. Comp.* 68, 351-369 (1999). *(the integer-relation
+  engine over the richer basis; via `mpmath.pslq`.)*
+- **FunSearch** — Romera-Paredes, Barekatain, Novikov, Balog, Kumar, Dupont, Ruiz,
+  Ellenberg, Wang, Fawzi, Kohli & Fawzi, "Mathematical discoveries from program
+  search with large language models," *Nature* 625, 468-475 (2024). *(the
+  generator/harness split — mathlas is the harness half, no LLM — in `funsearch.py`.)*
+- **OpenEvolve** — open-source FunSearch/AlphaEvolve re-implementation. *(open prior
+  art for the program-search loop.)*
+- **MAP-Elites** — Mouret & Clune, "Illuminating search spaces by mapping elites,"
+  arXiv:1504.04909 (2015). *(the islands-of-elites program DB in `funsearch.py`.)*
 - **Reference-only** — TheoremSearch, arXiv:2602.05216 (UW Math AI Lab, 2026):
   studied for lessons (analysis in `docs/03`); their *dataset* (CC-BY/CC0) used as
   raw data. Their API/MCP/index/code are **not** a runtime dependency.

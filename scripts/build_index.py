@@ -69,7 +69,8 @@ def main() -> None:
 
     print(f"[3/3] saving -> {args.out}")
     meta = [{"doc_id": d.doc_id, "name": d.name, "slogan": d.slogan,
-             "statement": d.statement, "source": d.source, "title": d.title}
+             "statement": d.statement, "source": d.source, "title": d.title,
+             "label": d.label, "citations": d.citations, "category": d.category}
             for d in docs]
     np.savez_compressed(args.out, matrix=matrix, meta=json.dumps(meta),
                         dim=emb.dim, embedder=args.embedder, model=args.model)

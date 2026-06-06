@@ -16,6 +16,14 @@ Tools exposed
   verify_formal(statement, lean?)           REAL Lean kernel typecheck (or honest UNDETERMINED)
   applicability_checklist(candidate_statement) the result's preconditions, structured
   mapping_scaffold(problem, candidate_statement) the needs<->guarantees questions
+  -- discovery + web-augmentation layer (NO LLM; each returns DATA) --
+  conjecture_relation(value, max_terms?, cf_depth?)  Ramanujan-Machine: PSLQ-richer-basis
+                                            + continued-fraction conjectures (VERIFIED, not proved)
+  funsearch_evaluate(program_src, problem_id)  sandbox-score an AI-written program
+  funsearch_register(program_src, score, problem_id)  store it in a MAP-Elites DB
+  funsearch_status(problem_id)              best program(s) + few-shot for the next variant
+  search_directive(problem)                 a STRUCTURED web-search plan for the AI (no web call)
+  add_finding(statement, slogan, source, name?)  ingest a web result into the live corpus (no model load)
 
 Register in Claude Code (no API key needed):
 
@@ -30,6 +38,7 @@ the same tools and the same wire protocol.
 from __future__ import annotations
 
 import json
+import os
 from typing import Any, Dict, List, Optional
 
 
@@ -96,25 +105,85 @@ SEED_CORPUS: List[Dict[str, str]] = [
 # discipline: every per-call build must be cached).
 _RETRIEVER_CACHE: Dict[str, Any] = {}
 
+#: Default location of a prebuilt index (the offline Qwen3-Embedding-8B build).
+#: Overridable via the ``MATHLAS_INDEX`` env var. If present, ``search_existing_math``
+#: serves it (precomputed dense matrix + BM25) instead of the tiny seed corpus.
+_DEFAULT_INDEX = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "reference", "downloads", "index.npz")
+
+
+def _resolve_index_path() -> Optional[str]:
+    """The prebuilt-index path to serve, or ``None``. ``MATHLAS_INDEX`` wins; else
+    the default build location is used IF it exists. ``MATHLAS_INDEX`` set but
+    missing is an explicit opt-in error (don't silently fall back and confuse)."""
+    env = os.environ.get("MATHLAS_INDEX")
+    if env:
+        if not os.path.exists(env):
+            raise FileNotFoundError(
+                f"MATHLAS_INDEX={env} does not exist (set it to a built "
+                f"index.npz, or unset it to use the seed corpus).")
+        return env
+    return _DEFAULT_INDEX if os.path.exists(_DEFAULT_INDEX) else None
+
+
+def _embedder_for_index(index_path: str):
+    """Pick a query-time embedder matching the index's matrix.
+
+    Reads the index's stored ``model``/``embedder``/``dim`` and constructs the
+    matching embedder so query and document vectors share a space. A "qwen3"
+    index uses ``Qwen3Embedder`` (CPU at query time, no GPU needed for a single
+    query); a "hashing" index (CPU dev-smoke) uses ``HashingEmbedder`` at the
+    stored dim."""
+    import numpy as np
+    from .embed import HashingEmbedder, Qwen3Embedder
+    head = np.load(index_path, allow_pickle=True)
+    kind = str(head["embedder"]) if "embedder" in head else "qwen3"
+    model = str(head["model"]) if "model" in head else "Qwen/Qwen3-Embedding-8B"
+    dim = int(head["dim"]) if "dim" in head else None
+    if kind == "hashing":
+        return HashingEmbedder(dim=dim or 256)
+    # production: same Qwen3 model the matrix was built with (CPU query encode).
+    return Qwen3Embedder(model=model, dim=dim, device="cpu")
+
 
 def _build_retriever(corpus_dir: Optional[str], limit: int):
-    """Return a cached HybridRetriever for the seed corpus (default) or a corpus
-    dir (open theorem dataset parquets, if pyarrow is available). NO GPU: always
-    the zero-download HashingEmbedder."""
+    """Return a cached HybridRetriever. Resolution order:
+
+      1. explicit ``corpus_dir`` -> build from those dataset parquets (hashing);
+      2. no ``corpus_dir`` but a prebuilt index (``MATHLAS_INDEX`` / default
+         location) -> SERVE it (precomputed dense matrix + BM25, query-time embed);
+      3. otherwise -> the built-in seed corpus (zero downloads, hashing).
+    """
     from .retrieve.corpus import Document
     from .retrieve.hybrid import HybridRetriever
 
-    key = f"{corpus_dir or '<seed>'}::{limit}"
-    if key in _RETRIEVER_CACHE:
-        return _RETRIEVER_CACHE[key]
-
     if corpus_dir:
+        key = f"dir::{corpus_dir}::{limit}"
+        if key in _RETRIEVER_CACHE:
+            return _RETRIEVER_CACHE[key]
         from .retrieve.corpus import load_documents
         docs = load_documents(corpus_dir, limit=limit)
-    else:
-        docs = [Document(doc_id=str(i), slogan=d["statement"],
-                         statement=d["statement"], name=d["name"], source=d["source"])
-                for i, d in enumerate(SEED_CORPUS)]
+        retr = HybridRetriever(docs)  # hashing embedder -> no model download
+        _RETRIEVER_CACHE[key] = retr
+        return retr
+
+    index_path = _resolve_index_path()
+    if index_path:
+        key = f"index::{index_path}"
+        if key in _RETRIEVER_CACHE:
+            return _RETRIEVER_CACHE[key]
+        retr = HybridRetriever.from_index(
+            index_path, embedder=_embedder_for_index(index_path))
+        _RETRIEVER_CACHE[key] = retr
+        return retr
+
+    key = "<seed>"
+    if key in _RETRIEVER_CACHE:
+        return _RETRIEVER_CACHE[key]
+    docs = [Document(doc_id=str(i), slogan=d["statement"],
+                     statement=d["statement"], name=d["name"], source=d["source"])
+            for i, d in enumerate(SEED_CORPUS)]
     retr = HybridRetriever(docs)  # default HashingEmbedder -> no model download
     _RETRIEVER_CACHE[key] = retr
     return retr
@@ -185,28 +254,105 @@ def tool_search_existing_math(query: str, k: int = 10,
                               corpus_limit: int = 5000) -> Dict[str, Any]:
     """Search EXISTING math for candidate results (NO LLM). Wraps HybridRetriever.
 
-    Defaults to a small built-in seed corpus so it works with no GPU/downloads;
-    pass ``corpus_dir`` (open theorem dataset parquets) for the real index.
+    Resolution: an explicit ``corpus_dir`` (dataset parquets) wins; else a
+    prebuilt index (``MATHLAS_INDEX`` env or the default build location) is
+    served if present; else a small built-in seed corpus (zero GPU/downloads).
     Returns ranked candidates for the calling AI to reason over."""
     retr = _build_retriever(corpus_dir, corpus_limit)
     cands = retr.retrieve(query, k=int(k))
+    served_index = getattr(retr, "index_path", None)
+    if corpus_dir:
+        corpus_label = corpus_dir
+    elif served_index:
+        corpus_label = f"<prebuilt index: {served_index}>"
+    else:
+        corpus_label = "<built-in seed corpus>"
+
+    base = [
+        {"rank": i + 1, "name": c.name, "statement": c.statement,
+         "source": c.source, "score": c.score,
+         "slogan": (c.meta or {}).get("slogan"),
+         "title": (c.meta or {}).get("title"),
+         "citations": (c.meta or {}).get("citations"),
+         "category": (c.meta or {}).get("category"),
+         "provenance": (c.meta or {}).get("provenance")}
+        for i, c in enumerate(cands)
+    ]
+
+    # Fuse in the LIVE (web-added) corpus via its pure-BM25 channel — NO model
+    # load. Findings interleave by rank-fusion so a web_added result can surface
+    # above weak corpus hits. Counted/labelled so the AI knows it is AI-sourced.
+    n_findings_used = _merge_live_findings(query, base, int(k))
+
     return {
         "query": query,
-        "corpus": corpus_dir or "<built-in seed corpus>",
+        "corpus": corpus_label,
         "k": int(k),
-        "candidates": [
-            {"rank": i + 1, "name": c.name, "statement": c.statement,
-             "source": c.source, "score": c.score,
-             "slogan": (c.meta or {}).get("slogan")}
-            for i, c in enumerate(cands)
-        ],
+        "live_findings_merged": n_findings_used,
+        "candidates": base[:int(k)],
         "next": ("For a promising candidate, call mapping_scaffold(problem, "
                  "candidate.statement) and applicability_checklist(candidate."
-                 "statement); YOU (the AI) judge whether it applies."),
-        "note": ("Hybrid dense(hashing)+BM25+RRF over OUR OWN index. NO LLM. "
-                 "Default embedder is the zero-download fallback; the production "
-                 "Qwen3 index is an offline-GPU build."),
+                 "statement); YOU (the AI) judge whether it applies. A candidate "
+                 "with provenance 'web_added' is AI-sourced — verify it."),
+        "note": ("Hybrid dense+BM25+RRF over OUR OWN index, plus any web_added "
+                 "live-corpus findings (BM25, no model load). NO LLM. " +
+                 ("Serving a prebuilt index (precomputed dense matrix + BM25)."
+                  if served_index else
+                  "Default embedder is the zero-download hashing fallback; the "
+                  "production Qwen3 index is an offline-GPU build (point "
+                  "MATHLAS_INDEX at index.npz to serve it).")),
     }
+
+
+def _merge_live_findings(query: str, base: List[Dict[str, Any]], k: int) -> int:
+    """RRF-merge live (web_added) findings into ``base`` IN PLACE. Returns how many
+    distinct findings were merged. Pure BM25 over the findings sidecar — loads NO
+    embedding model (the whole point of add_finding). De-dups by statement so a
+    finding already present in the corpus is not double-counted."""
+    try:
+        from .webaug import search_findings
+    except Exception:
+        return 0
+    finds = search_findings(query, k=max(k, 10))
+    if not finds:
+        return 0
+    # RRF: combine the corpus ranking (base order) with the findings ranking.
+    rrf_k = 60
+    scored: Dict[str, Dict[str, Any]] = {}
+    order: List[str] = []
+
+    def _key(stmt: str) -> str:
+        return (stmt or "").strip().lower()[:200]
+
+    for rank, c in enumerate(base):
+        kk = _key(c.get("statement", ""))
+        scored[kk] = c
+        c["_rrf"] = c.get("_rrf", 0.0) + 1.0 / (rrf_k + rank + 1)
+        order.append(kk)
+    merged = 0
+    for rank, f in enumerate(finds):
+        kk = _key(f.get("statement", ""))
+        if kk in scored:                       # already in corpus -> just boost
+            scored[kk]["_rrf"] += 1.0 / (rrf_k + rank + 1)
+            continue
+        entry = {"rank": None, "name": f.get("name"),
+                 "statement": f.get("statement"), "source": f.get("source"),
+                 "score": None, "slogan": f.get("slogan"), "title": None,
+                 "citations": None, "category": None,
+                 "provenance": f.get("provenance", "web_added"),
+                 "_rrf": 1.0 / (rrf_k + rank + 1)}
+        scored[kk] = entry
+        order.append(kk)
+        merged += 1
+    # re-rank everything by fused score, rewrite base in place.
+    ranked = sorted((scored[kk] for kk in dict.fromkeys(order)),
+                    key=lambda c: c.get("_rrf", 0.0), reverse=True)
+    base.clear()
+    for i, c in enumerate(ranked):
+        c.pop("_rrf", None)
+        c["rank"] = i + 1
+        base.append(c)
+    return merged
 
 
 def tool_verify_numeric(value: str, closed_form: str,
@@ -307,6 +453,201 @@ def tool_mapping_scaffold(problem: str, candidate_statement: str) -> Dict[str, A
     }
 
 
+# --------------------------------------------------------------------------- #
+# DISCOVERY + WEB-AUGMENTATION tools (NEW). All NO-LLM; each returns DATA for the
+# calling AI. ramanujan.py (conjecture), funsearch.py (program search harness),
+# webaug.py (search_directive + add_finding).
+# --------------------------------------------------------------------------- #
+def tool_conjecture_relation(value: str, max_terms: int = 16,
+                             cf_depth: int = 200,
+                             min_digits: int = 25) -> Dict[str, Any]:
+    """RAMANUJAN MACHINE: conjecture EXISTING relations for a real constant (NO LLM).
+
+    Beyond identify_constant's flat basis: (a) PSLQ over a RICHER basis (powers,
+    pairwise products of known constants, log/exp/zeta values) -> integer-relation
+    closed forms; (b) a Ramanujan-Machine continued-fraction / polynomial-recurrence
+    conjecture (search small integer polys p(n),q(n) whose generalized CF matches
+    the constant); plus the SIMPLE continued fraction + any recognised pattern.
+    EVERY candidate is numerically VERIFIED to high precision before it is
+    reported. Provenance is 'conjectured_relation' — a numerically-verified
+    CONJECTURE, NOT a proof (take it to verify_formal / a human / the literature).
+    Pass MANY digits of the constant (PSLQ/CF need >16). Cites the Ramanujan
+    Machine (Raayoni et al., Nature 2021) + PSLQ (Ferguson-Bailey-Arno)."""
+    import mpmath
+    from .ramanujan import conjecture
+    with mpmath.workdps(max(int(min_digits) + 40, 80)):
+        res = conjecture(str(value), max_terms=int(max_terms),
+                         cf_depth=int(cf_depth), min_digits=int(min_digits))
+    relations = [
+        {"kind": r.kind, "closed_form": r.expr,
+         "integer_relation_coeffs": list(r.coeffs), "basis": list(r.basis),
+         "digits_verified": r.verify.digits_agreed,
+         "reeval": r.verify.reeval, "provenance": r.provenance.novelty.value,
+         "method": r.provenance.method}
+        for r in res.relations
+    ]
+    cfs = [
+        {"kind": c.kind,
+         "a_n_poly_coeffs": list(c.poly_a), "b_n_poly_coeffs": list(c.poly_b),
+         "cf_equals": c.image, "cf_value": c.cf_value,
+         "digits_verified": c.digits_agreed, "depth": c.depth,
+         "form": "a0 + b1/(a1 + b2/(a2 + ...)), a_n=poly_a(n), b_n=poly_b(n)",
+         "provenance": c.provenance.novelty.value, "method": c.provenance.method}
+        for c in res.continued_fractions
+    ]
+    scf = None
+    if res.simple_cf is not None:
+        s = res.simple_cf
+        scf = {"kind": s.kind, "terms": list(s.terms), "pattern": s.pattern,
+               "convergent": s.convergent, "digits_verified": s.digits_agreed,
+               "provenance": s.provenance.novelty.value, "method": s.provenance.method}
+    return {
+        "query": res.query,
+        "found": res.found,
+        "integer_relations": relations,
+        "continued_fractions": cfs,
+        "simple_continued_fraction": scf,
+        "note": ("All candidates are numerically VERIFIED conjectures (provenance "
+                 "'conjectured_relation'), NOT proofs — verify_formal / a human / "
+                 "the literature for a proof. NO LLM. Ramanujan Machine (Raayoni "
+                 "et al., Nature 2021) + PSLQ (Ferguson-Bailey-Arno). Honest "
+                 "UNIDENTIFIED if nothing verified."),
+    }
+
+
+def tool_funsearch_evaluate(program_src: str, problem_id: str,
+                            timeout_s: float = 10.0) -> Dict[str, Any]:
+    """FUNSEARCH HARNESS — score an AI-written program in a SANDBOX (NO LLM).
+
+    The AI is the program GENERATOR; mathlas is the deterministic HARNESS. Runs
+    ``program_src`` in a sandboxed subprocess (hard wall-clock timeout, network
+    stubbed out, POSIX CPU/memory rlimits, throwaway cwd) against the registered
+    scorer for ``problem_id`` and returns the numeric score or the error. Ship
+    problems: 'cap_set' (cap set in Z_3^n), 'online_bin_packing'. FunSearch
+    (Romera-Paredes et al., Nature 2024); OpenEvolve is the open prior art."""
+    from .funsearch import evaluate
+    r = evaluate(program_src, problem_id, timeout_s=float(timeout_s))
+    return {
+        "problem_id": r.problem_id,
+        "ok": r.ok,
+        "score": r.score,
+        "behavior": list(r.behavior),
+        "error": r.error,
+        "timed_out": r.timed_out,
+        "seconds": round(r.seconds, 3),
+        "note": ("Deterministic sandboxed run (subprocess + timeout + no network "
+                 "+ rlimits). NO LLM — YOU write the program; mathlas scores it. "
+                 "Higher score is better. Register a good one with funsearch_register, "
+                 "then funsearch_status for the few-shot to write a better variant."),
+    }
+
+
+def tool_funsearch_register(program_src: str, score: float,
+                            problem_id: str,
+                            behavior: Optional[List[Any]] = None) -> Dict[str, Any]:
+    """FUNSEARCH — store a scored program in the on-disk MAP-Elites DB (NO LLM).
+
+    Persists ``program_src`` (with its ``score``) into the island / MAP-Elites
+    program database under reference/downloads/funsearch/ (gitignored) and reports
+    whether it is a new best — globally and in its behaviour cell. Pass the
+    ``behavior`` returned by funsearch_evaluate to land it in the right cell."""
+    from .funsearch import register
+    beh = tuple(behavior) if behavior else None
+    r = register(program_src, float(score), problem_id, behavior=beh)
+    return {
+        "problem_id": r.problem_id,
+        "accepted": r.accepted,
+        "new_global_best": r.new_global_best,
+        "score": r.score,
+        "cell": r.cell,
+        "global_best_score": r.global_best_score,
+        "n_cells": r.n_cells,
+        "n_registered": r.n_registered,
+        "note": ("Stored in the MAP-Elites program DB (one elite per behaviour "
+                 "cell + the global best). NO LLM. Call funsearch_status to get "
+                 "the few-shot context for the next, better variant."),
+    }
+
+
+def tool_funsearch_status(problem_id: str, top_k: int = 3) -> Dict[str, Any]:
+    """FUNSEARCH — current best program(s) + score + the FEW-SHOT the AI writes
+    the next variant from (NO LLM).
+
+    Returns the problem spec, the best program + score, the per-cell MAP-Elites
+    elites, and ``few_shot_context`` — the best-shot prompt assembled as DATA for
+    the calling AI to write a strictly-better program. mathlas never sends it to
+    a model; the AI is the generator."""
+    from .funsearch import status
+    r = status(problem_id, top_k=int(top_k))
+    return {
+        "problem_id": r.problem_id,
+        "description": r.description,
+        "entry_point": r.entry_point,
+        "best_score": r.best_score,
+        "best_program": r.best_program,
+        "n_cells": r.n_cells,
+        "n_registered": r.n_registered,
+        "elites": r.elites,
+        "few_shot_context": r.few_shot_context,
+        "starter_program": r.starter_program,
+        "note": ("few_shot_context is DATA for YOU to write the next, better "
+                 "program (FunSearch's best-shot prompt) — mathlas calls no LLM. "
+                 "Write it, funsearch_evaluate it, funsearch_register it, repeat."),
+    }
+
+
+def tool_search_directive(problem: str) -> Dict[str, Any]:
+    """WEB-AUGMENTED RETRIEVAL — tell the AI WHAT to search (mathlas makes NO web
+    call, NO LLM).
+
+    The local corpus is finite; the calling AI has the web. mathlas analyses the
+    problem (the needs<->guarantees signature + domain heuristics) and returns
+    STRUCTURED search instructions: arXiv query strings, candidate sub-fields +
+    arXiv categories, named methods/inequalities/theorems to look for, and which
+    OTHER mathlas tools to also run. The AI does the searching, then feeds results
+    back via add_finding."""
+    from .webaug import search_directive
+    d = search_directive(problem)
+    return {
+        "problem": d.problem,
+        "signature": d.signature,
+        "arxiv_queries": d.arxiv_queries,
+        "subfields": d.subfields,
+        "arxiv_categories": d.arxiv_categories,
+        "named_results": d.named_results,
+        "also_try_mathlas_tools": d.mathlas_tools,
+        "instructions": d.instructions,
+        "note": d.note,
+    }
+
+
+def tool_add_finding(statement: str, slogan: str, source: str,
+                     name: Optional[str] = None) -> Dict[str, Any]:
+    """WEB-AUGMENTED RETRIEVAL — the AI feeds a web-found result into the LIVE
+    corpus (NO embedding-model load, NO LLM).
+
+    Appends the finding to the live corpus through the BM25 / sparse channel +
+    metadata with provenance 'web_added' — it becomes retrievable IMMEDIATELY via
+    search_existing_math (RRF-fused), and crucially this requires NO embedding
+    model (the 8B is never loaded per finding; works on any machine). If a dense
+    Qwen3 index is ALREADY loaded in-process, a dense vector is added too; else
+    dense is skipped (BM25 covers it) and a batch reindex embeds the backlog
+    later. A web finding is a LEAD, not a proof — still verify it."""
+    from .webaug import add_finding
+    r = add_finding(statement, slogan, source, name=name)
+    return {
+        "ok": r.ok,
+        "statement": r.statement,
+        "name": r.name,
+        "slogan": r.slogan,
+        "source": r.source,
+        "provenance": r.provenance,
+        "dense_added": r.dense_added,
+        "n_findings": r.n_findings,
+        "note": r.note,
+    }
+
+
 # Registry: (name, fn, description, json-schema-ish param spec) — drives both the
 # FastMCP registration and the fallback server's tools/list + tools/call.
 _TOOLS: List[Dict[str, Any]] = [
@@ -362,6 +703,67 @@ _TOOLS: List[Dict[str, Any]] = [
          "candidate_statement": {"type": "string", "description":
                                  "a candidate existing result's statement"},
      }, "required": ["problem", "candidate_statement"]},
+    # --- DISCOVERY + WEB-AUGMENTATION (NEW) --- #
+    {"name": "conjecture_relation", "fn": tool_conjecture_relation,
+     "description": tool_conjecture_relation.__doc__,
+     "params": {
+         "value": {"type": "string", "description":
+                   "the real constant as a decimal string (give MANY digits; "
+                   "PSLQ/CF search needs >16)"},
+         "max_terms": {"type": "integer", "description":
+                       "max PSLQ basis vector length (default 16; cost grows fast)"},
+         "cf_depth": {"type": "integer", "description":
+                      "continued-fraction evaluation depth (default 200)"},
+     }, "required": ["value"]},
+    {"name": "funsearch_evaluate", "fn": tool_funsearch_evaluate,
+     "description": tool_funsearch_evaluate.__doc__,
+     "params": {
+         "program_src": {"type": "string", "description":
+                         "the candidate Python program source (YOU write it; it "
+                         "must define the problem's entry point)"},
+         "problem_id": {"type": "string", "description":
+                        "the problem to score against: 'cap_set' or "
+                        "'online_bin_packing'"},
+         "timeout_s": {"type": "number", "description":
+                       "hard wall-clock timeout in seconds (default 10)"},
+     }, "required": ["program_src", "problem_id"]},
+    {"name": "funsearch_register", "fn": tool_funsearch_register,
+     "description": tool_funsearch_register.__doc__,
+     "params": {
+         "program_src": {"type": "string", "description": "the program source"},
+         "score": {"type": "number", "description":
+                   "the score from funsearch_evaluate"},
+         "problem_id": {"type": "string", "description": "the problem id"},
+         "behavior": {"type": "array", "items": {},
+                      "description": "the behaviour descriptor from "
+                                     "funsearch_evaluate (MAP-Elites cell)"},
+     }, "required": ["program_src", "score", "problem_id"]},
+    {"name": "funsearch_status", "fn": tool_funsearch_status,
+     "description": tool_funsearch_status.__doc__,
+     "params": {
+         "problem_id": {"type": "string", "description":
+                        "the problem id: 'cap_set' or 'online_bin_packing'"},
+         "top_k": {"type": "integer", "description":
+                   "how many elite programs to include in the few-shot (default 3)"},
+     }, "required": ["problem_id"]},
+    {"name": "search_directive", "fn": tool_search_directive,
+     "description": tool_search_directive.__doc__,
+     "params": {
+         "problem": {"type": "string", "description":
+                     "a problem / result description to build a web-search plan for"},
+     }, "required": ["problem"]},
+    {"name": "add_finding", "fn": tool_add_finding,
+     "description": tool_add_finding.__doc__,
+     "params": {
+         "statement": {"type": "string", "description":
+                       "the web-found result's statement (the real text)"},
+         "slogan": {"type": "string", "description":
+                    "a short natural-language denotation of it (what it says)"},
+         "source": {"type": "string", "description":
+                    "where it came from: a URL / arXiv id / citation"},
+         "name": {"type": "string", "description":
+                  "optional name/title of the result"},
+     }, "required": ["statement", "slogan", "source"]},
 ]
 
 
@@ -388,9 +790,15 @@ def build_fastmcp():
             "verify_numeric (airtight digit check), verify_formal (REAL Lean "
             "kernel typecheck, or honest UNDETERMINED), applicability_checklist "
             "and mapping_scaffold (structured needs<->guarantees scaffolds you "
-            "reason over). Typical flow: search_existing_math -> mapping_scaffold "
-            "+ applicability_checklist -> you judge applicability -> verify_numeric "
-            "for any numeric claim."),
+            "reason over). PLUS a discovery + web-augmentation layer: "
+            "conjecture_relation (Ramanujan-Machine PSLQ-richer-basis + "
+            "continued-fraction conjectures, VERIFIED not proved), "
+            "funsearch_evaluate/register/status (a sandboxed program-search "
+            "harness where YOU write the programs), and search_directive + "
+            "add_finding (mathlas tells you what to web-search and ingests your "
+            "findings into the live corpus with no model load). Typical flow: "
+            "search_existing_math -> mapping_scaffold + applicability_checklist -> "
+            "you judge applicability -> verify_numeric for any numeric claim."),
     )
     # Register each tool. FastMCP introspects the wrapped fn's signature/types.
     for spec in _TOOLS:

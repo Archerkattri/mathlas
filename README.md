@@ -4,8 +4,11 @@
 > any MCP client. The **AI is the brain**; mathlas gives it the capabilities it
 > lacks: **search over existing math**, **integer-sequence (OEIS) identification**,
 > **airtight numeric/formal verification** (incl. a real Lean kernel check),
-> structured **needs↔guarantees scaffolds**, and honest **provenance** (never
-> "novel"). Apache-2.0, mostly-pure-Python.
+> structured **needs↔guarantees scaffolds**, honest **provenance** (never
+> "novel"), and a **discovery + web-augmentation layer** — a Ramanujan-Machine
+> relation/continued-fraction conjecturer, a sandboxed **FunSearch** program-search
+> harness, and a web-search **directive + live-corpus** ingestion channel.
+> Apache-2.0, mostly-pure-Python.
 
 mathlas is a tool that an AI *uses*, **not** a tool that uses an AI. It **never
 calls an LLM and needs no API key** — so it is free and pluggable everywhere.
@@ -32,6 +35,10 @@ search_existing_math ─▶ mapping_scaffold + applicability_checklist ─▶ (A
 | `verify_formal(statement, lean?)` | runs the **real Lean kernel** on a snippet → typechecks? (else honest UNDETERMINED) | ✅ real kernel check when a snippet+Lean are present (`typecheck ≠ proves-it-applies`) |
 | `applicability_checklist(candidate_statement)` | the result's hypotheses as an atomic **checklist** for the AI to check | heuristic parse, no LLM |
 | `mapping_scaffold(problem, candidate_statement)` | the **needs↔guarantees** questions + fill-in template for the AI | structured, no LLM |
+| `conjecture_relation(value, max_terms?, cf_depth?)` | **Ramanujan Machine**: PSLQ over a *richer* basis (powers/products/zeta) + continued-fraction / polynomial-recurrence **conjectures** | ✅ every candidate numerically **verified** (a *conjecture*, not a proof) |
+| `funsearch_evaluate / _register / _status(...)` | **FunSearch harness**: sandbox-score an AI-written program, store it in a MAP-Elites DB, return the few-shot to write a better one | deterministic sandbox, no LLM |
+| `search_directive(problem)` | **web-search plan**: arXiv queries + sub-fields + named results + which mathlas tools to also run (mathlas makes **no** web call) | structured, no LLM |
+| `add_finding(statement, slogan, source, name?)` | ingest a web-found result into the **live corpus** (BM25, **no model load**) → retrievable via `search_existing_math` | provenance `web_added` |
 
 ## Install
 
@@ -48,10 +55,11 @@ pip install -e '.[embed]'        # + sentence-transformers/torch, for the Qwen3 
 claude mcp add mathlas -- python -m mathlas.server
 ```
 
-That's it — mathlas now appears as seven tools the agent can call. (Cursor / any
-MCP client: point it at the same `python -m mathlas.server` stdio command.) The
-server prefers the official `mcp` SDK and **falls back to a dependency-free stdio
-JSON-RPC server** if `mcp` isn't installed, so it always runs.
+That's it — mathlas now appears as **thirteen** tools the agent can call (the
+seven core tools above + the six-tool discovery/web-augmentation layer). (Cursor /
+any MCP client: point it at the same `python -m mathlas.server` stdio command.)
+The server prefers the official `mcp` SDK and **falls back to a dependency-free
+stdio JSON-RPC server** if `mcp` isn't installed, so it always runs.
 
 > **Data tools (optional, gitignored, removable):** `identify_sequence` needs a
 > local copy of OEIS, and `verify_formal` needs a Lean toolchain. Both degrade
@@ -91,6 +99,58 @@ AI →   verify_numeric("0.7390851332151607", "<the Dottie-number closed form, i
 mathlas supplied the search, the scaffold, the checklist, and the airtight
 numeric check; **the AI did the judging**. No LLM was called *inside* mathlas.
 
+## The discovery + web-augmentation layer (NO LLM)
+
+Three capabilities that go past a finite, offline corpus — the AI drives, mathlas
+is the deterministic harness.
+
+**1) Ramanujan Machine — `conjecture_relation`.** Beyond `identify_constant`'s
+flat basis: PSLQ over a *richer* basis (powers, pairwise products of known
+constants, `log`/`exp`/`zeta` values) **and** a Ramanujan-Machine continued-
+fraction / polynomial-recurrence search (small integer polynomials `p(n),q(n)`
+whose generalized CF `a₀ + b₁/(a₁ + b₂/(a₂ + …))` matches the constant), plus the
+simple CF + pattern. **Every candidate is numerically verified** before it is
+returned; provenance is `conjectured_relation` — a *verified conjecture, not a
+proof*. E.g. `e` → the simple CF `[2; 1,2,1,1,4,1,1,6,…]` (pattern recognised) and
+the generalized CF `aₙ=n+1, bₙ=n+1 ⇒ e−1`; `π` → `aₙ=2n+1, bₙ=n² ⇒ 4/π` (verified
+to 60+ digits). Cites Raayoni et al., *Nature* 2021, + PSLQ.
+
+**2) FunSearch harness — `funsearch_evaluate / _register / _status`.** *You* (the
+AI) are the program generator; mathlas is the deterministic harness — **no LLM**.
+`funsearch_evaluate` runs a candidate Python program in a **sandboxed subprocess**
+(hard timeout, network stubbed, POSIX CPU/memory rlimits, throwaway cwd) against a
+registered scorer and returns its score; `funsearch_register` stores it in an
+on-disk **MAP-Elites** program DB (gitignored); `funsearch_status` returns the
+best program(s) + the few-shot context to write the next, better one. Ships two
+runnable problems — `cap_set` (size of a cap set in ℤ₃ⁿ, FunSearch's headline
+result) and `online_bin_packing`. Cites Romera-Paredes et al., *Nature* 2024;
+OpenEvolve as the open prior art.
+
+**3) Web-augmented retrieval — `search_directive` + `add_finding`.** The corpus is
+finite; the AI has the web. `search_directive(problem)` returns a **structured
+search plan** (arXiv query strings, candidate sub-fields + arXiv categories, named
+methods/inequalities to look for, which mathlas tools to also run) — mathlas makes
+**no** web call. The AI searches, then `add_finding(statement, slogan, source)`
+appends the result to the **live corpus** via the BM25/sparse channel **with no
+embedding-model load** (the key constraint: growing the index never loads the 8B),
+so it is immediately retrievable through `search_existing_math` (RRF-fused),
+provenance `web_added`. A dense vector is added only if a Qwen3 index is *already*
+loaded in-process; otherwise the batch `scripts/reindex_findings.py` embeds the
+backlog later on a GPU box.
+
+```python
+import mpmath
+from mathlas import conjecture, search_directive, add_finding
+print(conjecture(mpmath.e).simple_cf.pattern)     # 'arithmetic (e-type): [2; 1, 2, 1, 1, 4, 1, 1, 6, ...]'
+print(search_directive("evaluate sum 1/n^4").named_results[:2])  # ['Euler-Maclaurin', 'Abel summation']
+
+import mathlas.funsearch as fs
+prog = fs.get_problem("cap_set").starter_src
+r = fs.evaluate(prog, "cap_set")                  # sandboxed score
+fs.register(prog, r.score, "cap_set", behavior=r.behavior)
+ctx = fs.status("cap_set").few_shot_context        # the prompt YOU write the next variant from
+```
+
 ## Use without an MCP client — CLI / Python (still no LLM)
 
 ```bash
@@ -126,8 +186,18 @@ ok   = verify_closed_form(mpmath.mpf("1.6449340668482264"), "pi**2/6").ok   # ai
 
 - **Numeric: recovery 8/8, false-positive 0/3** (`benchmarks/numeric_bench.py`).
 - **MCP server**: starts under both the official SDK *and* the dependency-free
-  fallback; lists all **seven** tools; a `search_existing_math` + `verify_numeric`
+  fallback; lists all **thirteen** tools; a `search_existing_math` + `verify_numeric`
   round-trip succeeds on the built-in seed corpus.
+- **Discovery layer**: `conjecture_relation` recovers + **verifies** the e-type
+  simple CF `[2;1,2,1,1,4,1,1,6,…]` and the generalized CFs for `e−1` / `4/π`
+  (60+ digits), and PSLQs `ζ(2) → π²/6` over the richer basis; `funsearch_evaluate`
+  sandbox-scores a program (cap_set starter 5 → a greedy 16, max 20), with timeout /
+  network-block / error capture exercised; `funsearch_register`/`_status` persist a
+  MAP-Elites DB and emit the few-shot.
+- **Web-augmentation**: `search_directive` returns structured arXiv queries +
+  sub-fields + named results; `add_finding` appends a result with **no model load**
+  and it is then retrieved through `search_existing_math` (RRF-fused, provenance
+  `web_added`).
 - **Sequences (OEIS)**: with the local OEIS data present, `identify_sequence`
   exact-matches `[1,1,2,3,5,8,13,21] → A000045` (Fibonacci) and
   `[2,3,5,7,11,13] → A000040` (primes), over ~396k local sequences; the index is
