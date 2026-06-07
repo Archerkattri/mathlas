@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/banner.png" alt="mathlas" width="680">
+  <img src="https://raw.githubusercontent.com/Archerkattri/mathlas/main/assets/banner.png" alt="mathlas" width="680">
 </p>
 
 # mathlas
