@@ -158,8 +158,7 @@ retrieval-quality leap.
 (The large-n self-recall in §3a — n=81,833 over the full 1.635M index — is the tight
 complement to this small-n=15 external comparison: the dense channel matches a theorem
 across its formal and natural-language surface forms with slogan R@1 0.977 / R@10 0.998
-and statement R@10 0.923. An earlier n=3000 dense-only proxy reported recall@20 97.4% /
-recall@1 78.3%; §3a supersedes it at full scale.)
+and statement R@10 0.923 at full scale.)
 
 ### 3c. The self-augmenting loop in action — repairing the withheld-corpus gap to beat everyone
 
