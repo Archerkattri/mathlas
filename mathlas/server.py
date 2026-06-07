@@ -51,7 +51,7 @@ from typing import Any, Dict, List, Optional
 #: A tiny, self-contained seed corpus of well-known results so that
 #: ``search_existing_math`` works with ZERO downloads / GPU / corpus when no
 #: ``corpus_dir`` is supplied. For a real index, point ``corpus_dir`` at the open
-#: theorem dataset (parquets) — see scripts/build_index.py / docs/04_build.md.
+#: theorem dataset (parquets) — see scripts/build_index.py / docs/methods.md.
 SEED_CORPUS: List[Dict[str, str]] = [
     {"name": "Mean Value Theorem",
      "statement": "If f is continuous on [a, b] and differentiable on (a, b), "
@@ -108,9 +108,16 @@ _RETRIEVER_CACHE: Dict[str, Any] = {}
 #: Default location of a prebuilt index (the offline Qwen3-Embedding-8B build).
 #: Overridable via the ``MATHLAS_INDEX`` env var. If present, ``search_existing_math``
 #: serves it (precomputed dense matrix + BM25) instead of the tiny seed corpus.
-_DEFAULT_INDEX = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "reference", "downloads", "index.npz")
+def _default_index() -> str:
+    """Prefer the merged dense union index (base 1.34M + dolma 294K, exact) if built;
+    else fall back to the base 1.34M ``index.npz``."""
+    d = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                     "reference", "downloads")
+    full = os.path.join(d, "index_full_dense.npz")
+    return full if os.path.exists(full) else os.path.join(d, "index.npz")
+
+
+_DEFAULT_INDEX = _default_index()
 
 
 def _resolve_index_path() -> Optional[str]:
