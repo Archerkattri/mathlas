@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="mathlas" width="170">
+</p>
+
 # mathlas
 
 > **An airtight-math tool an AI *uses* — no LLM, no API key, free.** Plug it into
