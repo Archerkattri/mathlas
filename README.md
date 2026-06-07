@@ -17,6 +17,58 @@ identification, structured **needs↔guarantees scaffolds**, honest **provenance
 (never "novel"), plus a **discovery + web-augmentation layer** that lets the AI
 grow the index at runtime.
 
+## Results
+
+The discipline is **airtight-or-nothing**: a result is an independently-checkable fact or
+an honest "nothing." Each verification tier feeds both a *known* input (expect the correct
+verified result) and a *structureless* input (expect an honest "nothing") — the
+**false-positive rate is 0 across every tier** (full tables + commands in [`RESULTS.md`](RESULTS.md)):
+
+| Tier | Recovery@known | False-positive | Why it's airtight | Benchmark |
+|---|---|---|---|---|
+| Numeric (`identify_constant`) | 8/8 | 0/3 | independent high-precision re-eval (50–51 digits) | `benchmarks/numeric_bench.py` |
+| Sequence (`identify_sequence`) | 8/8 (all top-1) | 0/3 | exact term-match vs local OEIS (~400k seqs) | `benchmarks/tier_bench.py` |
+| Formal (`verify_formal`) | 7/7 verdicts | — | real Lean 4.30 kernel typecheck | `benchmarks/tier_bench.py` |
+| Ramanujan (`conjecture_relation`) | 6/6 | 0/2 | PSLQ + CF, every hit re-verified ≥25 digits | `benchmarks/tier_bench.py` |
+| Applicability moat | 15/15 decomp + 6/6 catch | — | atomic preconditions, misapplication traps | `benchmarks/moat_bench.py` |
+| FunSearch + web-aug | 14/14 | — | sandbox containment (network / timeout / memory) | `benchmarks/tools_bench.py` |
+
+**The 1.635M-doc index — retrieval at scale.** `search_existing_math` is served from a
+built **1,635,233-document** exact dense index (Qwen3-Embedding-8B, 4096-d, over the
+permissive CC-BY/CC0 TheoremSearch subset + arXiv-math from Dolma + Stacks + ProofWiki),
+dense + Okapi-BM25 + RRF. On the held-out **81,833-document** test split, querying each
+theorem by its natural-language slogan retrieves its own entry at **R@1 0.977 / R@10
+0.998** (and **R@10 0.923** querying by the raw formal statement — cross-representation).
+
+## The self-augmenting loop — closing the coverage gap to beat everyone
+
+This is the demonstration that mathlas's `add_finding` **dense path** is a real,
+decisive runtime mechanism. On TheoremSearch's own **110 human-written queries**,
+baseline mathlas (corpus-only) hits a hard **coverage floor**: TheoremSearch
+open-sourced only ~15% of their private 9.2M corpus, so **95 of the 110 target papers
+are non-permissive arXiv they withheld** — unreachable for *any* open system. The AI
+then runs the loop: for each missing theorem it **web-finds the real statement**,
+embeds it with the **same Qwen3-Embedding-8B**, and `add_finding(dense_vec=…)` so it
+**RRF-fuses through the dense channel**. That repairs the gap and beats every baseline:
+
+| Method | theorem Hit@20 | paper Hit@20 |
+|---|---|---|
+| Google (`site:arxiv.org`) | — | 37.8% |
+| ChatGPT 5.2 w/ Search | 19.8% | — |
+| Gemini 3 Pro | 27.0% | — |
+| **TheoremSearch** (Qwen3-8B, full private 9.2M) | 45.0% | 56.8% |
+| mathlas — baseline (corpus-only, the coverage floor) | 10.0% | 13.6% |
+| **mathlas — after the self-augmenting WEB loop** | **59.1% (65/110)** | **70.0% (77/110)** |
+
+**This is the loop's value, not a native-corpus claim.** The 10.0% floor exists
+*because* TheoremSearch withheld 85% of their corpus; the loop repairs that coverage.
+On the reachable subset our retrieval is merely *on par* with TheoremSearch — we make
+no native-superiority claim. The result proves that `add_finding` lets an AI grow the
+live index at runtime, decisively. Honesty audit passed — **zero query-injection**: no
+finding's text contains the query; the slogans are real theorem prose and the queries
+are paraphrases, so the dense channel is what bridges them. Reproduce with
+`benchmarks/webaug_110_bench.py` (see [`RESULTS.md`](RESULTS.md) §3c).
+
 ## The 13 tools (all NO-LLM, returning data)
 
 ```
@@ -93,59 +145,6 @@ from mathlas import identify, identify_sequence, mapping_scaffold, applicability
 print(identify(mpmath.zeta(2)))            # 1.64493406684823 -> pi**2/6 [verified 51 digits]
 print(identify_sequence([1,1,2,3,5,8,13,21]).matches[1].a_number)  # 'A000045' (needs local OEIS)
 ```
-
-## Results
-
-Every tool has a reproduced benchmark — full tables + commands in
-[`RESULTS.md`](RESULTS.md). The discipline is **airtight-or-nothing**: a result is an
-independently-checkable fact or an honest "nothing." Each verification tier feeds both
-a *known* input (expect the correct verified result) and a *structureless* input
-(expect an honest "nothing") — the **false-positive rate is 0 across every tier**:
-
-| Tier | Recovery@known | False-positive | Why it's airtight | Benchmark |
-|---|---|---|---|---|
-| Numeric (`identify_constant`) | 8/8 | 0/3 | independent high-precision re-eval (50–51 digits) | `benchmarks/numeric_bench.py` |
-| Sequence (`identify_sequence`) | 8/8 (all top-1) | 0/3 | exact term-match vs local OEIS (~400k seqs) | `benchmarks/tier_bench.py` |
-| Formal (`verify_formal`) | 7/7 verdicts | — | real Lean 4.30 kernel typecheck | `benchmarks/tier_bench.py` |
-| Ramanujan (`conjecture_relation`) | 6/6 | 0/2 | PSLQ + CF, every hit re-verified ≥25 digits | `benchmarks/tier_bench.py` |
-| Applicability moat | 15/15 decomp + 6/6 catch | — | atomic preconditions, misapplication traps | `benchmarks/moat_bench.py` |
-| FunSearch + web-aug | 14/14 | — | sandbox containment (network / timeout / memory) | `benchmarks/tools_bench.py` |
-
-**The 1.635M-doc index — retrieval at scale.** `search_existing_math` is served from a
-built **1,635,233-document** exact dense index (Qwen3-Embedding-8B, 4096-d, over the
-permissive CC-BY/CC0 TheoremSearch subset + arXiv-math from Dolma + Stacks + ProofWiki),
-dense + Okapi-BM25 + RRF. On the held-out **81,833-document** test split, querying each
-theorem by its natural-language slogan retrieves its own entry at **R@1 0.977 / R@10
-0.998** (and **R@10 0.923** querying by the raw formal statement — cross-representation).
-
-## The self-augmenting loop — closing the coverage gap to beat everyone
-
-This is the demonstration that mathlas's `add_finding` **dense path** is a real,
-decisive runtime mechanism. On TheoremSearch's own **110 human-written queries**,
-baseline mathlas (corpus-only) hits a hard **coverage floor**: TheoremSearch
-open-sourced only ~15% of their private 9.2M corpus, so **95 of the 110 target papers
-are non-permissive arXiv they withheld** — unreachable for *any* open system. The AI
-then runs the loop: for each missing theorem it **web-finds the real statement**,
-embeds it with the **same Qwen3-Embedding-8B**, and `add_finding(dense_vec=…)` so it
-**RRF-fuses through the dense channel**. That repairs the gap and beats every baseline:
-
-| Method | theorem Hit@20 | paper Hit@20 |
-|---|---|---|
-| Google (`site:arxiv.org`) | — | 37.8% |
-| ChatGPT 5.2 w/ Search | 19.8% | — |
-| Gemini 3 Pro | 27.0% | — |
-| **TheoremSearch** (Qwen3-8B, full private 9.2M) | 45.0% | 56.8% |
-| mathlas — baseline (corpus-only, the coverage floor) | 10.0% | 13.6% |
-| **mathlas — after the self-augmenting WEB loop** | **59.1% (65/110)** | **70.0% (77/110)** |
-
-**This is the loop's value, not a native-corpus claim.** The 10.0% floor exists
-*because* TheoremSearch withheld 85% of their corpus; the loop repairs that coverage.
-On the reachable subset our retrieval is merely *on par* with TheoremSearch — we make
-no native-superiority claim. The result proves that `add_finding` lets an AI grow the
-live index at runtime, decisively. Honesty audit passed — **zero query-injection**: no
-finding's text contains the query; the slogans are real theorem prose and the queries
-are paraphrases, so the dense channel is what bridges them. Reproduce with
-`benchmarks/webaug_110_bench.py` (see [`RESULTS.md`](RESULTS.md) §3c).
 
 ## Docs
 
