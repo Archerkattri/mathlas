@@ -8,7 +8,7 @@ version = "1.0.0"
 description = "A tool FOR an AI (no API key, no LLM): search existing math over a 1.6M-doc index + airtight numeric/Lean verification + OEIS/PSLQ identification + needs<->guarantees scaffolds, served over MCP."
 readme = "README.md"
 requires-python = ">=3.9"
-license = { text = "Apache-2.0" }
+license = { file = "LICENSE" }
 authors = [{ name = "Krishi Attri", email = "krishiattriwork@gmail.com" }]
 keywords = ["mathematics", "symbolic", "pslq", "theorem-retrieval", "verification",
             "mcp", "oeis", "lean", "ramanujan-machine", "funsearch", "ai-tools"]
@@ -16,7 +16,7 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: Apache Software License",
+    "License :: Other/Proprietary License",
     "Operating System :: OS Independent",
     "Topic :: Scientific/Engineering :: Mathematics",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",

@@ -4,7 +4,7 @@
 > Claude Code, Cursor, or any MCP client. The **AI is the brain**; mathlas is the
 > **hands** — it gives the AI the capabilities it lacks and returns *data*
 > (candidates, verdicts, checklists, scaffolds) for the AI to reason over.
-> Apache-2.0, mostly-pure-Python.
+> PolyForm Noncommercial 1.0.0 — **noncommercial use only** (no commercial use). Mostly-pure-Python.
 
 mathlas is a tool that an AI *uses*, **not** a tool that uses an AI — it **never
 calls an LLM and needs no API key**, so it is free and pluggable everywhere. Most
