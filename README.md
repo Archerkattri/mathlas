@@ -93,12 +93,13 @@ search_existing_math ─▶ mapping_scaffold + applicability_checklist ─▶ (A
 ## Install & register with Claude Code (no API key)
 
 ```bash
-pip install -e .                 # core: numeric + retrieval + verify + scaffolds — NO LLM, NO API key
-pip install -e '.[mcp]'          # + official MCP SDK (a dep-free stdio fallback also ships built in)
-pip install -e '.[retrieve]'     # + pyarrow, to read the open theorem dataset (real index)
-pip install -e '.[embed]'        # + sentence-transformers/torch, for the Qwen3 embedder (offline GPU)
+pip install mathlas-mcp              # from PyPI — core: numeric + retrieval + verify + scaffolds (NO LLM, NO API key)
+pip install 'mathlas-mcp[mcp]'       # + official MCP SDK (a dep-free stdio fallback also ships built in)
+pip install 'mathlas-mcp[retrieve]'  # + pyarrow, to read the open theorem dataset (real index)
+pip install 'mathlas-mcp[embed]'     # + sentence-transformers/torch, for the Qwen3 embedder (offline GPU)
+# (or from source: git clone … && pip install -e '.[mcp]')
 
-claude mcp add mathlas -- python -m mathlas.server
+claude mcp add mathlas -- python -m mathlas.server   # import name stays `mathlas`
 ```
 
 That's it — mathlas now appears as **thirteen** tools the agent can call. The server

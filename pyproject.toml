@@ -3,7 +3,7 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mathlas"
+name = "mathlas-mcp"
 version = "1.0.0"
 description = "A tool FOR an AI (no API key, no LLM): search existing math over a 1.6M-doc index + airtight numeric/Lean verification + OEIS/PSLQ identification + needs<->guarantees scaffolds, served over MCP."
 readme = "README.md"
