@@ -200,20 +200,22 @@ retrieval is only *on par* with TheoremSearch. What this proves is that the
   paper-id / theorem is top-20 — the **same metric** as `eval_vs_theoremsearch.py`.
 - Findings persist in `reference/downloads/findings.jsonl`.
 
-Reproduce (the scratch drivers are kept as the reproducer):
+Reproduce — `benchmarks/webaug_110_bench.py` (both stages share one loaded index +
+encoder, exactly the live MCP fusion path):
 
 ```bash
 ME=third_party/math_engine
 # baseline (corpus-only floor) — dumps the MISS/reachability worklist:
 CUDA_VISIBLE_DEVICES=0 HF_HUB_CACHE=$ME/reference/downloads/hf PYTHONPATH=$ME \
-  python3 $ME/scripts/_webaug_eval.py baseline \
+  python3 $ME/benchmarks/webaug_110_bench.py baseline \
   --index $ME/reference/downloads/index_full_dense.npz \
   --test  $ME/reference/theorem-search-dataset/theorems-test.parquet --device cuda --k 20
 # augmented — ingests the web-found findings (dense_vec via the same encoder) and re-evals:
 CUDA_VISIBLE_DEVICES=0 HF_HUB_CACHE=$ME/reference/downloads/hf PYTHONPATH=$ME \
-  python3 $ME/scripts/_webaug_augment.py \
+  python3 $ME/benchmarks/webaug_110_bench.py augmented \
   --index $ME/reference/downloads/index_full_dense.npz \
-  --test  $ME/reference/theorem-search-dataset/theorems-test.parquet --device cuda --k 20
+  --test  $ME/reference/theorem-search-dataset/theorems-test.parquet \
+  --worklist $ME/reference/downloads/splits/_findings_worklist.json --device cuda --k 20
 ```
 
 ---

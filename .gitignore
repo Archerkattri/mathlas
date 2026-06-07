@@ -2,6 +2,18 @@
 # Not ours, not redistributed. Kept local for design study only.
 reference/
 
+# Internal planning / competitor-analysis notes — kept local, not part of the
+# public product docs. The clean methodology/results live in README.md,
+# RESULTS.md and docs/{methods,05_open_dataset,02_eval_vs_theoremsearch}.md.
+docs/00_vision.md
+docs/01_landscape.md
+docs/02_mvp_spec.md
+docs/03_theoremsearch_analysis.md
+
+# Scratch reproducer drivers — superseded by benchmarks/webaug_110_bench.py.
+scripts/_webaug_augment.py
+scripts/_webaug_eval.py
+
 # Python
 __pycache__/
 *.py[cod]
