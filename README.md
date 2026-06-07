@@ -4,6 +4,10 @@
 
 # mathlas
 
+[![PyPI](https://img.shields.io/pypi/v/mathlas-mcp)](https://pypi.org/project/mathlas-mcp/)
+[![License](https://img.shields.io/badge/license-PolyForm--NC%201.0.0-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](pyproject.toml)
+
 > **An airtight-math tool an AI *uses* — no LLM, no API key, free.** Plug it into
 > Claude Code, Cursor, or any MCP client. The **AI is the brain**; mathlas is the
 > **hands** — it gives the AI the capabilities it lacks and returns *data*
