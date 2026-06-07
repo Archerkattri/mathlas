@@ -5,11 +5,6 @@ mathematical constants. This is the "find the existing math" step for the
 numeric domain: every hit is, by construction, a combination of known
 constants. Proposing is cheap and permissive here -- the independent verify
 pass (see verify.py) is what filters spurious low-precision relations.
-
-NOTE (untested-pending-DiT): the exact set of constant-expression strings that
-``mpmath.identify`` accepts as a basis must be validated on first run. Keep the
-basis conservative until then; broaden once the benchmark's false-positive rate
-is measured.
 """
 from __future__ import annotations
 

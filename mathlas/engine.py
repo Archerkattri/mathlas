@@ -61,7 +61,7 @@ class Result:
         return self.best is not None
 
     def __str__(self) -> str:
-        if not self.identified:
+        if self.best is None:
             return f"{self.query} -> UNIDENTIFIED (no verified closed form)"
         b = self.best
         return (f"{self.query} -> {b.display}  "

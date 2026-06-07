@@ -27,9 +27,12 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from .retrieve import Candidate
+
+if TYPE_CHECKING:  # optional bring-your-own-LLM path only; never imported at runtime
+    from .llm import LLM
 
 _SYSTEM = (
     "You are a mathematical reasoning engine. Your ONE job: decide whether a "
@@ -137,10 +140,10 @@ class MappingScaffold:
     """
     problem: str
     candidate_statement: str
-    signature: Dict[str, object]
-    checklist: Dict[str, object]
+    signature: Dict[str, Any]
+    checklist: Dict[str, Any]
     questions: List[str]
-    answer_template: Dict[str, object]
+    answer_template: Dict[str, Any]
     note: str = ("mathlas built this scaffold with NO LLM. The CALLING AI does "
                  "the needs<->guarantees reasoning and fills in answer_template; "
                  "then verify each precondition (applicability_checklist) and, "

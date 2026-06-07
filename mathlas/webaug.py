@@ -100,18 +100,43 @@ class AddFindingResult:
     note: str
 
 
+def _served_index_dim() -> Optional[int]:
+    """The dim of the CURRENTLY-served retriever's dense space, or ``None`` if no
+    dense index is in-process. Used to validate a caller-supplied ``dense_vec``
+    against the space its cosine will be scored in — without loading any model."""
+    try:
+        from . import server as _server
+    except Exception:
+        return None
+    cache = getattr(_server, "_RETRIEVER_CACHE", {})
+    for retr in cache.values():
+        emb = getattr(retr, "embedder", None)
+        d = getattr(emb, "dim", None) if emb is not None else None
+        if d:
+            return int(d)
+    return None
+
+
 def add_finding(statement: str, slogan: str, source: str,
                 name: Optional[str] = None,
-                path: Optional[str] = None) -> AddFindingResult:
+                path: Optional[str] = None,
+                dense_vec: Optional[List[float]] = None) -> AddFindingResult:
     """Append a web-found result to the LIVE corpus — NO embedding-model load.
 
     The finding is persisted to the JSONL sidecar and becomes retrievable through
     the BM25 / sparse channel immediately (``search_existing_math`` fuses live
     findings in). Provenance is ``web_added`` (AI-sourced, NOT yet independently
-    verified — the AI must still check it). If a dense Qwen3 index is ALREADY
-    loaded in this process, its query encoder is reused to attach a dense vector
-    too; otherwise dense is skipped and the documented batch ``reindex`` will
-    embed the backlog later (the 8B is never loaded here).
+    verified — the AI must still check it).
+
+    DENSE: the CALLER (Claude Code / the AI) may supply ``dense_vec`` — an
+    embedding of the finding's slogan in the SAME space as the served index. When
+    given, it is stored on the record and the finding gets FULL dense+BM25 corpus
+    treatment at retrieval (cosine vs the query vector, RRF-fused) with NO model
+    load here. Its length must equal the served index dim (else an honest error is
+    returned). If ``dense_vec`` is None, we fall back to reusing an ALREADY-loaded
+    in-process Qwen3 encoder (never constructing one); if neither is available
+    dense is skipped (BM25 covers it) and the documented batch ``reindex`` embeds
+    the backlog later (the 8B is never loaded here).
     """
     statement = (statement or "").strip()
     slogan = (slogan or "").strip() or statement
@@ -132,15 +157,39 @@ def add_finding(statement: str, slogan: str, source: str,
         "dense": False,
     }
 
-    # OPTIONAL dense: only if a Qwen3 index is ALREADY loaded in-process. We never
-    # construct an embedder here (that would load the model). We sniff the server's
-    # retriever cache for an already-served Qwen3 index and reuse its query encoder.
+    # DENSE channel, two routes, NEITHER loads a model:
+    #  (1) caller-supplied dense_vec — the AI already embedded the slogan in the
+    #      served space; validate its length and store it. This is the primary
+    #      "self-augmenting corpus" path (no 8B load, works anywhere).
+    #  (2) else reuse an ALREADY-resident in-process encoder (Qwen3/Hashing).
     dense_added = False
-    vec = _maybe_dense_vector(rec["slogan"], rec["name"])
-    if vec is not None:
+    if dense_vec is not None:
+        vec = [float(x) for x in dense_vec]
+        if not vec:
+            return AddFindingResult(
+                ok=False, statement=statement, name=rec["name"], source=source,
+                slogan=slogan, provenance="web_added", dense_added=False,
+                n_findings=len(load_findings(p)), path=p,
+                note="dense_vec was empty; pass a non-empty embedding or omit it.")
+        served_dim = _served_index_dim()
+        if served_dim is not None and len(vec) != served_dim:
+            return AddFindingResult(
+                ok=False, statement=statement, name=rec["name"], source=source,
+                slogan=slogan, provenance="web_added", dense_added=False,
+                n_findings=len(load_findings(p)), path=p,
+                note=(f"dense_vec length {len(vec)} != served index dim "
+                      f"{served_dim}; the vector must be embedded in the SAME "
+                      f"space as the index (same model/dim). Finding NOT added — "
+                      f"re-embed with the served model, or omit dense_vec."))
         rec["dense"] = True
-        rec["dense_vec"] = [float(x) for x in vec]
+        rec["dense_vec"] = vec
         dense_added = True
+    else:
+        vec = _maybe_dense_vector(rec["slogan"], rec["name"])
+        if vec is not None:
+            rec["dense"] = True
+            rec["dense_vec"] = [float(x) for x in vec]
+            dense_added = True
 
     tmp = p + ".tmp"
     # append atomically: write the new line to a tmp and concatenate is overkill;
@@ -158,10 +207,11 @@ def add_finding(statement: str, slogan: str, source: str,
             "loaded. Retrievable now through search_existing_math (RRF-fused). "
             "Provenance web_added: AI-sourced, NOT yet independently verified — "
             "still check it (verify_numeric / applicability_checklist / source). "
-            + ("A dense vector was added (a Qwen3 index was already loaded)."
+            + ("A dense vector was added (caller-supplied or a Qwen3 index was "
+               "already loaded) — the finding now gets full dense+BM25 retrieval."
                if dense_added else
                "Dense skipped (no embedder loaded); run the batch `reindex` "
-               "(docs/04_build.md) to add dense vectors later on a GPU box."))
+               "(docs/methods.md) to add dense vectors later on a GPU box."))
     return AddFindingResult(
         ok=True, statement=statement, name=rec["name"], source=source,
         slogan=slogan, provenance="web_added", dense_added=dense_added,
@@ -225,6 +275,16 @@ def _live_index(path: str):
     return recs, bm
 
 
+def dense_findings(path: Optional[str] = None) -> List[Dict[str, Any]]:
+    """All live findings that carry a stored ``dense_vec`` (best-effort, cached via
+    ``_live_index``). The caller (the findings-merge path) scores these against the
+    query vector by cosine — so a dense-tagged finding is reachable even when its
+    wording differs from the query and BM25 misses it (the whole point of dense)."""
+    path = path or findings_path()
+    recs, _ = _live_index(path)
+    return [r for r in recs if r.get("dense") and r.get("dense_vec")]
+
+
 def search_findings(query: str, k: int = 10,
                     path: Optional[str] = None) -> List[Dict[str, Any]]:
     """BM25 search over the live (web-added) corpus only — NO model. Returns the
@@ -246,56 +306,85 @@ def search_findings(query: str, k: int = 10,
 # --------------------------------------------------------------------------- #
 # search_directive — tell the AI WHAT to search (mathlas makes NO web call).
 # --------------------------------------------------------------------------- #
-# Light domain heuristics: keyword -> (sub-fields, named methods/results to look
-# for). Deliberately shallow and transparent; the AI refines. These are CUES, not
-# claims — they bias the AI's web search toward the right corner of the literature.
+# Domain heuristics: each cue is (trigger_terms, sub-fields, named results). A term
+# may be a single word or a multi-word phrase; phrase matches are STRONGER signal
+# than a lone generic word ("inequality", "sum", "bound"), so we score by how many
+# distinct terms hit and how specific they are, then keep only the domains that
+# clearly fit the problem (see ``_score_domains``). These are CUES, not claims —
+# they bias the AI's web search toward the right corner of the literature.
+#
+# ``specific`` cues are narrow, high-precision domains (spectral graph theory,
+# number theory, …); ``generic`` cues are broad catch-alls (a bare inequality / a
+# bare sum) that should only surface when nothing more specific fired — otherwise
+# they drown the directive in Cauchy-Schwarz/Heine-Borel grab-bags.
 _DOMAIN_CUES: List[tuple] = [
-    (("fixed point", "contraction", "iterate", "converge to a point"),
+    # (terms, subfields, named_results, generic?)
+    (("spectral gap", "second eigenvalue", "second-largest eigenvalue", "expander",
+      "expansion", "adjacency matrix", "laplacian", "d-regular", "regular graph",
+      "mixing", "spectral graph"),
+     ["spectral graph theory", "graph theory", "combinatorics"],
+     ["expander mixing lemma", "Cheeger inequality (graphs)",
+      "Alon-Boppana bound", "Ramanujan graphs", "Perron-Frobenius theorem",
+      "Courant-Fischer min-max theorem"], False),
+    (("fixed point", "fixed-point", "contraction mapping", "contraction mappings",
+      "contraction", "complete metric space", "iterate", "converge to a point"),
      ["analysis", "metric geometry", "dynamical systems"],
      ["Banach fixed-point theorem", "Brouwer fixed-point theorem",
-      "Kakutani fixed-point theorem", "contraction mapping principle"]),
-    (("prime", "divisor", "modulo", "congruence", "integer", "gcd", "coprime"),
+      "Kakutani fixed-point theorem", "contraction mapping principle"], False),
+    (("prime", "divisor", "totient", "modulo", "congruence", "gcd", "coprime",
+      "multiplicative function", "arithmetic function", "mobius", "möbius"),
      ["number theory", "analytic number theory"],
-     ["Chinese remainder theorem", "Dirichlet's theorem", "quadratic reciprocity",
-      "Bertrand's postulate", "sieve methods"]),
+     ["Möbius inversion", "Dirichlet convolution", "multiplicativity of Euler's totient",
+      "Chinese remainder theorem", "Dirichlet's theorem", "quadratic reciprocity"], False),
     (("graph", "vertex", "edge", "coloring", "clique", "independent set", "matching"),
      ["graph theory", "combinatorics", "extremal combinatorics"],
      ["Ramsey's theorem", "Turán's theorem", "Hall's marriage theorem",
-      "probabilistic method", "Szemerédi regularity lemma"]),
-    (("inequality", "bound", "at most", "at least", "maximize", "minimize"),
-     ["analysis", "convex optimization", "extremal combinatorics"],
-     ["Cauchy-Schwarz", "Jensen's inequality", "AM-GM", "Hölder's inequality",
-      "rearrangement inequality", "Chebyshev's inequality"]),
-    (("matrix", "eigenvalue", "linear map", "determinant", "rank", "vector space"),
+      "probabilistic method", "Szemerédi regularity lemma"], False),
+    (("eigenvalue", "linear map", "determinant", "rank", "vector space",
+      "diagonalizable", "self-adjoint", "hermitian", "symmetric matrix"),
      ["linear algebra", "matrix analysis"],
      ["spectral theorem", "Cayley-Hamilton", "Perron-Frobenius theorem",
-      "singular value decomposition", "Gershgorin circle theorem"]),
+      "singular value decomposition", "Gershgorin circle theorem",
+      "Courant-Fischer min-max theorem"], False),
     (("probability", "random", "expected", "variance", "almost surely", "martingale"),
      ["probability theory", "stochastic processes"],
      ["law of large numbers", "central limit theorem", "Chernoff bound",
-      "Azuma's inequality", "Borel-Cantelli lemma"]),
-    (("continuous", "compact", "open set", "closed set", "limit", "sequence", "metric"),
+      "Azuma's inequality", "Borel-Cantelli lemma"], False),
+    (("compact", "open set", "closed set", "metric space", "homeomorphism",
+      "connected", "dense"),
      ["real analysis", "topology"],
      ["Heine-Borel theorem", "Bolzano-Weierstrass", "Arzelà-Ascoli",
-      "Stone-Weierstrass theorem", "Baire category theorem"]),
-    (("series", "sum", "converges", "zeta", "closed form", "constant", "evaluate"),
+      "Stone-Weierstrass theorem", "Baire category theorem"], False),
+    (("zeta", "closed form", "ramanujan", "special function", "hypergeometric"),
      ["analysis", "number theory", "special functions"],
      ["Euler-Maclaurin", "Abel summation", "Parseval's theorem",
-      "Ramanujan summation", "PSLQ / integer-relation detection"]),
+      "Ramanujan summation", "PSLQ / integer-relation detection"], False),
     (("group", "ring", "field", "homomorphism", "ideal", "subgroup", "galois"),
      ["abstract algebra", "Galois theory"],
      ["Lagrange's theorem", "Sylow theorems", "fundamental theorem of Galois theory",
-      "structure theorem for finitely generated abelian groups"]),
-    (("differential equation", "pde", "ode", "boundary value", "heat", "wave"),
+      "structure theorem for finitely generated abelian groups"], False),
+    (("differential equation", "pde", "ode", "boundary value", "heat equation",
+      "wave equation"),
      ["differential equations", "functional analysis"],
      ["Picard-Lindelöf theorem", "Lax-Milgram theorem", "maximum principle",
-      "Sobolev embedding", "method of characteristics"]),
+      "Sobolev embedding", "method of characteristics"], False),
+    # --- generic catch-alls: only used if no specific domain fired strongly ----- #
+    (("inequality", "bound", "at most", "at least", "maximize", "minimize",
+      "arithmetic mean", "geometric mean", "convex"),
+     ["analysis", "convex optimization"],
+     ["AM-GM", "Cauchy-Schwarz", "Jensen's inequality", "Hölder's inequality",
+      "rearrangement inequality", "Chebyshev's inequality"], True),
+    (("series", "sum", "converges", "summation", "evaluate", "constant"),
+     ["analysis"],
+     ["Euler-Maclaurin", "Abel summation", "telescoping sum",
+      "PSLQ / integer-relation detection"], True),
 ]
 
 # arXiv math subject classes, for the AI to filter a search.
 _ARXIV_CATS = {
     "number theory": "math.NT", "analytic number theory": "math.NT",
-    "graph theory": "math.CO", "combinatorics": "math.CO",
+    "spectral graph theory": "math.CO", "graph theory": "math.CO",
+    "combinatorics": "math.CO",
     "extremal combinatorics": "math.CO", "analysis": "math.CA",
     "real analysis": "math.CA", "topology": "math.GN", "metric geometry": "math.MG",
     "linear algebra": "math.RA", "matrix analysis": "math.RA",
@@ -335,8 +424,42 @@ def _keywords(problem: str) -> List[str]:
              if w not in stop and len(w) > 2]
     # keep order, de-dup
     seen = set()
-    out = [w for w in words if not (w in seen or seen.add(w))]
+    out = [w for w in words if not (w in seen or seen.add(w))]  # type: ignore[func-returns-value]
     return out
+
+
+def _score_domains(low: str):
+    """Score every domain cue against the problem text and return the cues that
+    clearly fit, most-relevant first.
+
+    A cue scores +2 per matched MULTI-WORD phrase (high precision, e.g. "spectral
+    gap", "arithmetic mean") and +1 per matched single word (lower precision). We
+    then keep the specific domains that scored, and only fall back to the generic
+    catch-alls (bare inequality / bare sum) when NO specific domain matched — so a
+    spectral-graph problem is not buried under Cauchy-Schwarz / Heine-Borel noise.
+    """
+    specific: List[tuple] = []  # (score, subfields, named)
+    generic: List[tuple] = []
+    for cue in _DOMAIN_CUES:
+        terms, fields, results = cue[0], cue[1], cue[2]
+        is_generic = cue[3] if len(cue) > 3 else False
+        score = 0
+        for t in terms:
+            if t in low:
+                score += 2 if " " in t or "-" in t else 1
+        if score:
+            (generic if is_generic else specific).append((score, fields, results))
+    specific.sort(key=lambda x: x[0], reverse=True)
+    # Drop weak specific hits: keep those within a factor of the top score so a
+    # single incidental word ("graph" in an analysis problem) cannot inject a whole
+    # unrelated domain when a stronger domain is clearly present.
+    if specific:
+        top = specific[0][0]
+        chosen = [d for d in specific if d[0] * 2 >= top]
+        # generic catch-alls only when nothing specific fired
+        return chosen
+    generic.sort(key=lambda x: x[0], reverse=True)
+    return generic
 
 
 def search_directive(problem: str) -> SearchDirective:
@@ -354,20 +477,28 @@ def search_directive(problem: str) -> SearchDirective:
     sig = _heuristic_signature(text)
     low = text.lower()
 
+    # Score the domain cues and keep only the ones that clearly fit the problem,
+    # most-relevant first — so the directive is TARGETED, not a static grab-bag.
+    chosen = _score_domains(low)
     subfields: List[str] = []
-    named: List[str] = []
-    for cues, fields, results in _DOMAIN_CUES:
-        if any(c in low for c in cues):
-            subfields.extend(fields)
-            named.extend(results)
-    # de-dup, preserve order
+    for _score, fields, _results in chosen:
+        subfields.extend(fields)
     subfields = list(dict.fromkeys(subfields))
-    named = list(dict.fromkeys(named))
-    cats = list(dict.fromkeys(_ARXIV_CATS.get(s) for s in subfields
-                              if _ARXIV_CATS.get(s)))
+    # Interleave named results round-robin across the chosen domains (most-relevant
+    # domain first within each round) so a strongly-matched domain leads BUT a
+    # second relevant domain still contributes within the cap — instead of one
+    # domain's long list crowding the others out.
+    result_lists = [list(results) for _s, _f, results in chosen]
+    named: List[str] = []
+    for col in range(max((len(r) for r in result_lists), default=0)):
+        for r in result_lists:
+            if col < len(r):
+                named.append(r[col])
+    named = list(dict.fromkeys(named))[:8]  # de-dup, then cap
+    cats = [c for c in dict.fromkeys(_ARXIV_CATS.get(s) for s in subfields) if c]
 
     kws = _keywords(text)
-    need = (sig.get("need") or text)[:120]
+    need = str(sig.get("need") or text)[:120]
     # a couple of arXiv-style query strings: a need-phrase query and a keyword query.
     arxiv_queries: List[str] = []
     if kws:
@@ -400,7 +531,7 @@ def search_directive(problem: str) -> SearchDirective:
                              "or continued fraction (verified, not proved)."})
     # de-dup tools by name (keep first reason)
     seen_t = set()
-    tools = [t for t in tools if not (t["tool"] in seen_t or seen_t.add(t["tool"]))]
+    tools = [t for t in tools if not (t["tool"] in seen_t or seen_t.add(t["tool"]))]  # type: ignore[func-returns-value,index]
 
     instructions = (
         "1) Run the suggested mathlas tools first (they are airtight / local). "
@@ -423,5 +554,5 @@ def search_directive(problem: str) -> SearchDirective:
 __all__ = [
     "search_directive", "SearchDirective",
     "add_finding", "AddFindingResult",
-    "load_findings", "search_findings", "findings_path",
+    "load_findings", "search_findings", "dense_findings", "findings_path",
 ]

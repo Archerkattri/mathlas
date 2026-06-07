@@ -31,6 +31,17 @@ Register in Claude Code (no API key needed):
 
 or run directly over stdio:  ``python -m mathlas.server``.
 
+Index selection (environment)
+-----------------------------
+``search_existing_math`` serves a prebuilt index if one exists on disk; otherwise
+a tiny built-in seed corpus (zero GPU/downloads). Two env vars override:
+
+  * ``MATHLAS_SEED=1``  force the LIGHTWEIGHT seed corpus and NEVER load the
+                        multi-GB prebuilt index — a fast cold start on any box
+                        (wins over ``MATHLAS_INDEX``). Accepts 1/true/yes/on.
+  * ``MATHLAS_INDEX=/path/index.npz``  serve this specific prebuilt index
+                        (errors if missing). Ignored when ``MATHLAS_SEED`` is set.
+
 Implementation: uses the official ``mcp`` Python SDK (FastMCP) if installed;
 otherwise falls back to a dependency-free stdio JSON-RPC MCP server implementing
 the same tools and the same wire protocol.
@@ -109,8 +120,8 @@ _RETRIEVER_CACHE: Dict[str, Any] = {}
 #: Overridable via the ``MATHLAS_INDEX`` env var. If present, ``search_existing_math``
 #: serves it (precomputed dense matrix + BM25) instead of the tiny seed corpus.
 def _default_index() -> str:
-    """Prefer the merged dense union index (base 1.34M + dolma 294K, exact) if built;
-    else fall back to the base 1.34M ``index.npz``."""
+    """Prefer the merged 1,635,233-doc exact dense union index (base 1.341M +
+    dolma 294K + Stacks + ProofWiki) if built; else fall back to ``index.npz``."""
     d = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                      "reference", "downloads")
     full = os.path.join(d, "index_full_dense.npz")
@@ -120,10 +131,23 @@ def _default_index() -> str:
 _DEFAULT_INDEX = _default_index()
 
 
+def _seed_forced() -> bool:
+    """``MATHLAS_SEED`` truthy => force the tiny built-in seed corpus and SKIP the
+    heavy prebuilt index entirely (a fast, lightweight cold start on any box).
+    Accepts 1/true/yes/on (case-insensitive); 0/empty/unset = normal resolution."""
+    return os.environ.get("MATHLAS_SEED", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _resolve_index_path() -> Optional[str]:
-    """The prebuilt-index path to serve, or ``None``. ``MATHLAS_INDEX`` wins; else
-    the default build location is used IF it exists. ``MATHLAS_INDEX`` set but
-    missing is an explicit opt-in error (don't silently fall back and confuse)."""
+    """The prebuilt-index path to serve, or ``None`` (=> built-in seed corpus).
+
+    ``MATHLAS_SEED`` wins over everything: if set it forces the seed corpus and
+    NEVER touches the (multi-GB) prebuilt index — use it for a lightweight cold
+    start. Otherwise ``MATHLAS_INDEX`` wins; else the default build location is
+    used IF it exists. ``MATHLAS_INDEX`` set but missing is an explicit opt-in
+    error (don't silently fall back and confuse)."""
+    if _seed_forced():
+        return None
     env = os.environ.get("MATHLAS_INDEX")
     if env:
         if not os.path.exists(env):
@@ -289,7 +313,7 @@ def tool_search_existing_math(query: str, k: int = 10,
     # Fuse in the LIVE (web-added) corpus via its pure-BM25 channel — NO model
     # load. Findings interleave by rank-fusion so a web_added result can surface
     # above weak corpus hits. Counted/labelled so the AI knows it is AI-sourced.
-    n_findings_used = _merge_live_findings(query, base, int(k))
+    n_findings_used = _merge_live_findings(query, base, int(k), retr=retr)
 
     return {
         "query": query,
@@ -311,25 +335,81 @@ def tool_search_existing_math(query: str, k: int = 10,
     }
 
 
-def _merge_live_findings(query: str, base: List[Dict[str, Any]], k: int) -> int:
+def _dense_finding_ranking(query: str, retr) -> List[Dict[str, Any]]:
+    """Rank live findings that carry a stored ``dense_vec`` by COSINE against the
+    query vector, best-first. Reuses the SERVED retriever's already-loaded embedder
+    to embed the query (no new model load) and dot-products the stored unit-norm
+    finding vectors. Returns ``[]`` unless there is a real dense space to score in
+    (a finding's dense_vec must match the served embedder dim — same space).
+
+    This is the channel that makes a caller-supplied dense finding reachable when
+    its wording differs from the query and BM25 misses it (dense's whole purpose).
+    """
+    emb = getattr(retr, "embedder", None)
+    if emb is None or not getattr(emb, "dim", None):
+        return []
+    try:
+        from .webaug import dense_findings
+        import numpy as np
+    except Exception:
+        return []
+    dfs = dense_findings()
+    if not dfs:
+        return []
+    dim = int(emb.dim)
+    rows, recs = [], []
+    for r in dfs:
+        v = r.get("dense_vec")
+        if v is not None and len(v) == dim:     # only same-space vectors
+            rows.append(np.asarray(v, dtype=np.float32))
+            recs.append(r)
+    if not recs:
+        return []
+    mat = np.vstack(rows)
+    n = np.linalg.norm(mat, axis=1, keepdims=True)
+    n[n == 0] = 1.0
+    mat = mat / n                               # cosine via dot on unit rows
+    q = emb.encode([query], is_query=True)[0].astype(np.float32)
+    qn = np.linalg.norm(q)
+    if qn:
+        q = q / qn
+    sims = mat @ q
+    order = np.argsort(-sims)
+    return [recs[i] for i in order]
+
+
+def _merge_live_findings(query: str, base: List[Dict[str, Any]], k: int,
+                         retr=None) -> int:
     """RRF-merge live (web_added) findings into ``base`` IN PLACE. Returns how many
-    distinct findings were merged. Pure BM25 over the findings sidecar — loads NO
-    embedding model (the whole point of add_finding). De-dups by statement so a
-    finding already present in the corpus is not double-counted."""
+    distinct findings were merged. Loads NO embedding model: BM25 over the findings
+    sidecar ALWAYS, plus — when the served index has a real dense space — a DENSE
+    channel that scores each finding's caller-supplied ``dense_vec`` against the
+    query vector by cosine, RRF-fused alongside the BM25 finding-rank (the SAME
+    dense+BM25 treatment native docs get). De-dups by statement so a finding
+    already in the corpus is not double-counted."""
     try:
         from .webaug import search_findings
     except Exception:
         return 0
     finds = search_findings(query, k=max(k, 10))
-    if not finds:
+    dense_ranked = _dense_finding_ranking(query, retr) if retr is not None else []
+    if not finds and not dense_ranked:
         return 0
-    # RRF: combine the corpus ranking (base order) with the findings ranking.
+    # RRF: combine the corpus ranking (base order) with the findings BM25 ranking
+    # AND the findings dense ranking — three rankings, one fused score.
     rrf_k = 60
     scored: Dict[str, Dict[str, Any]] = {}
     order: List[str] = []
 
     def _key(stmt: str) -> str:
         return (stmt or "").strip().lower()[:200]
+
+    def _entry(f: Dict[str, Any]) -> Dict[str, Any]:
+        return {"rank": None, "name": f.get("name"),
+                "statement": f.get("statement"), "source": f.get("source"),
+                "score": None, "slogan": f.get("slogan"), "title": None,
+                "citations": None, "category": None,
+                "provenance": f.get("provenance", "web_added"), "_rrf": 0.0}
 
     for rank, c in enumerate(base):
         kk = _key(c.get("statement", ""))
@@ -339,18 +419,18 @@ def _merge_live_findings(query: str, base: List[Dict[str, Any]], k: int) -> int:
     merged = 0
     for rank, f in enumerate(finds):
         kk = _key(f.get("statement", ""))
-        if kk in scored:                       # already in corpus -> just boost
-            scored[kk]["_rrf"] += 1.0 / (rrf_k + rank + 1)
-            continue
-        entry = {"rank": None, "name": f.get("name"),
-                 "statement": f.get("statement"), "source": f.get("source"),
-                 "score": None, "slogan": f.get("slogan"), "title": None,
-                 "citations": None, "category": None,
-                 "provenance": f.get("provenance", "web_added"),
-                 "_rrf": 1.0 / (rrf_k + rank + 1)}
-        scored[kk] = entry
-        order.append(kk)
-        merged += 1
+        if kk not in scored:
+            scored[kk] = _entry(f)
+            order.append(kk)
+            merged += 1
+        scored[kk]["_rrf"] += 1.0 / (rrf_k + rank + 1)   # BM25 finding-rank
+    for rank, f in enumerate(dense_ranked):
+        kk = _key(f.get("statement", ""))
+        if kk not in scored:
+            scored[kk] = _entry(f)
+            order.append(kk)
+            merged += 1
+        scored[kk]["_rrf"] += 1.0 / (rrf_k + rank + 1)   # DENSE finding-rank
     # re-rank everything by fused score, rewrite base in place.
     ranked = sorted((scored[kk] for kk in dict.fromkeys(order)),
                     key=lambda c: c.get("_rrf", 0.0), reverse=True)
@@ -629,19 +709,26 @@ def tool_search_directive(problem: str) -> Dict[str, Any]:
 
 
 def tool_add_finding(statement: str, slogan: str, source: str,
-                     name: Optional[str] = None) -> Dict[str, Any]:
+                     name: Optional[str] = None,
+                     dense_vec: Optional[List[float]] = None) -> Dict[str, Any]:
     """WEB-AUGMENTED RETRIEVAL — the AI feeds a web-found result into the LIVE
     corpus (NO embedding-model load, NO LLM).
 
     Appends the finding to the live corpus through the BM25 / sparse channel +
     metadata with provenance 'web_added' — it becomes retrievable IMMEDIATELY via
     search_existing_math (RRF-fused), and crucially this requires NO embedding
-    model (the 8B is never loaded per finding; works on any machine). If a dense
-    Qwen3 index is ALREADY loaded in-process, a dense vector is added too; else
-    dense is skipped (BM25 covers it) and a batch reindex embeds the backlog
-    later. A web finding is a LEAD, not a proof — still verify it."""
+    model (the 8B is never loaded per finding; works on any machine).
+
+    DENSE (the self-augmenting corpus): pass ``dense_vec`` — YOU (the AI) embed the
+    finding's slogan with the SAME model the served index was built with and hand
+    mathlas the vector. mathlas stores it and the finding then gets the SAME
+    dense+BM25 retrieval native docs get (cosine vs the query vector, RRF-fused),
+    so it's found even when its wording differs from the query — with NO model load
+    here. The vector's length must equal the served index dim (else an honest error
+    is returned, finding NOT added). Omit dense_vec for BM25-only (backward
+    compatible). A web finding is a LEAD, not a proof — still verify it."""
     from .webaug import add_finding
-    r = add_finding(statement, slogan, source, name=name)
+    r = add_finding(statement, slogan, source, name=name, dense_vec=dense_vec)
     return {
         "ok": r.ok,
         "statement": r.statement,
@@ -770,6 +857,14 @@ _TOOLS: List[Dict[str, Any]] = [
                     "where it came from: a URL / arXiv id / citation"},
          "name": {"type": "string", "description":
                   "optional name/title of the result"},
+         "dense_vec": {"type": "array", "items": {"type": "number"},
+                       "description":
+                       "OPTIONAL dense embedding of the slogan, computed BY YOU "
+                       "(the AI) with the SAME model the served index uses, length "
+                       "== the served index dim. Storing it gives the finding full "
+                       "dense+BM25 retrieval (found even when wording differs from "
+                       "the query). NO model is loaded by mathlas. Omit for "
+                       "BM25-only."},
      }, "required": ["statement", "slogan", "source"]},
 ]
 

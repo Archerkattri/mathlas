@@ -193,7 +193,7 @@ class OEISIndex:
                 f"OEIS terms file '{OEIS_STRIPPED}' not found. Looked in: "
                 f"{', '.join(searched)}. Download it (and names.gz) from "
                 "https://oeis.org/stripped.gz / https://oeis.org/names.gz into "
-                "reference/downloads/oeis/ (see docs/04_build.md).")
+                "reference/downloads/oeis/ (see docs/methods.md).")
         self.data_dir = os.path.dirname(stripped)
 
         # Parse terms + build the n-gram index.

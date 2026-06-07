@@ -57,6 +57,12 @@ class HybridRetriever(Retriever):
     the default 0.0 the ranking is pure dense+BM25 RRF (no regression risk).
     """
 
+    #: Set when the retriever was built from a prebuilt index (``from_index`` /
+    #: ``from_faiss``); ``None`` for a freshly embedded corpus.
+    index_path: Optional[str] = None
+    index_dim: Optional[int] = None
+    index_model: Optional[str] = None
+
     def __init__(self, documents: Sequence[Document],
                  embedder: Optional[Embedder] = None,
                  rrf_k: int = 60, channel_depth: int = 50,

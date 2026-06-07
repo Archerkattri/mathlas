@@ -102,23 +102,41 @@ def cmd_finalize(args):
     if missing:
         print(f"[finalize] {len(missing)} shards NOT embedded yet — not finalizing", flush=True)
         sys.exit(2)
-    mats, meta = [], []
     keys = ("doc_id", "name", "slogan", "statement", "source", "title",
             "label", "citations", "category")
-    for s in shards:
-        mats.append(np.load(_emb_path(wd, s)))
-        for l in open(s):
-            r = json.loads(l)
-            # .get tolerates older shards written before label/citations/category.
-            meta.append({k: r.get(k) for k in keys})
+    # Meta goes to a sidecar JSONL (one record per line), NOT inside the npz:
+    # 1.34M records carrying full LaTeX statements serialise to a >2GB JSON
+    # string, which numpy cannot store as an array scalar ("string too large to
+    # store inside array"). We stream it in shard order so row i of the JSONL
+    # aligns exactly with row i of the dense matrix (same order embed used).
+    meta_path = os.path.splitext(args.out)[0] + ".meta.jsonl"
+    mats = []
+    n_docs = n_cited = n_cat = 0
+    with open(meta_path + ".tmp", "w") as mf:
+        for s in shards:
+            mats.append(np.load(_emb_path(wd, s)))
+            for l in open(s):
+                r = json.loads(l)
+                # .get tolerates older shards written before label/citations/category.
+                row = {k: r.get(k) for k in keys}
+                mf.write(json.dumps(row) + "\n")
+                n_docs += 1
+                if isinstance(row.get("citations"), int):
+                    n_cited += 1
+                if row.get("category"):
+                    n_cat += 1
+    os.replace(meta_path + ".tmp", meta_path)
     matrix = np.vstack(mats).astype(np.float16)
-    n_cited = sum(1 for m in meta if isinstance(m.get("citations"), int))
-    n_cat = sum(1 for m in meta if m.get("category"))
+    if matrix.shape[0] != n_docs:
+        raise SystemExit(f"[finalize] matrix rows ({matrix.shape[0]}) != "
+                         f"meta rows ({n_docs}) — shard/meta misalignment")
     print(f"[finalize] {matrix.shape[0]} docs x {matrix.shape[1]}d "
-          f"({n_cited} with citations, {n_cat} with category) -> {args.out}", flush=True)
-    np.savez(args.out, matrix=matrix, meta=json.dumps(meta), dim=matrix.shape[1],
+          f"({n_cited} with citations, {n_cat} with category) -> {args.out} "
+          f"(+ {os.path.basename(meta_path)})", flush=True)
+    np.savez(args.out, matrix=matrix, dim=matrix.shape[1],
              embedder="qwen3", model=args.model,
-             has_citations=int(n_cited), has_category=int(n_cat))
+             meta_file=os.path.basename(meta_path),
+             n_docs=n_docs, has_citations=int(n_cited), has_category=int(n_cat))
     print("[finalize] done.", flush=True)
 
 

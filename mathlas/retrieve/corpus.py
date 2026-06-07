@@ -24,7 +24,7 @@ from typing import Dict, List, Optional
 try:
     import pyarrow.parquet as pq
 except ImportError:  # pragma: no cover
-    pq = None
+    pq = None  # type: ignore[assignment]
 
 
 # A label is "meaningful" (worth humanising into a query-side signal) only if it

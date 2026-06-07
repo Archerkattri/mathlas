@@ -49,6 +49,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 
 # allow running as a plain script (python scripts/eval_vs_theoremsearch.py)
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -103,15 +104,17 @@ def _load_test(test_path: str):
     return out
 
 
-def _evaluate(retriever, test, k: int, verbose: bool = False):
-    """Run the retriever over the test queries; return (paper_hits, thm_hits, n)."""
+def _evaluate(retriever, test, k: int, mode: str = "hybrid", verbose: bool = False):
+    """Run the retriever over the test queries; return (paper_hits, thm_hits, n).
+    ``mode`` selects the retrieval channel (hybrid/dense/sparse) for ablation."""
     paper_hits = thm_hits = 0
     n = len(test)
     for q, gt_arxiv, gt_title_key, gt_thm in test:
-        cands = retriever.retrieve(q, k=k)
+        cands = retriever.retrieve(q, k=k, mode=mode)
         ph = th = False
         for c in cands:
-            meta = c.meta or {}
+            meta = dict(c.meta or {})
+            meta.setdefault("source", getattr(c, "source", None))
             if _paper_matches(meta, gt_arxiv, gt_title_key):
                 ph = True
                 if gt_thm and _norm_num(c.name or "") == gt_thm:
@@ -137,36 +140,73 @@ def _report(paper_hits: int, thm_hits: int, n: int, k: int, scope: str) -> None:
 
 
 def run_index(args) -> None:
-    """Mode 1: serve a prebuilt index.npz and evaluate on all 110 queries."""
+    """Mode 1: serve a prebuilt index.npz and evaluate on the 110 queries.
+
+    One index load + one BM25 build, then THREE honest views:
+      * full-110         -- coverage-limited: most test targets live in the
+                           non-permissive 85% of arXiv that is absent from the
+                           permissive corpus we are legally allowed to index.
+      * reachable-subset -- the FAIR retrieval-quality number: only the queries
+                           whose ground-truth paper IS in our corpus (the regime
+                           TheoremSearch's 45.0/56.8 was measured in -- every
+                           target present in their full 9.2M corpus).
+      * channel ablation -- hybrid vs dense-only vs sparse-only on that subset,
+                           isolating the value of our BM25+RRF fusion.
+    """
+    import numpy as np
     from mathlas.retrieve.hybrid import HybridRetriever
 
+    head = np.load(args.index, allow_pickle=True)
+    model = str(head["model"]) if "model" in head else "Qwen/Qwen3-Embedding-8B"
+    dim = int(head["dim"]) if "dim" in head else None
     embedder = None
     if args.embedder == "qwen3":
         from mathlas.embed import Qwen3Embedder
-        import numpy as np
-        head = np.load(args.index, allow_pickle=True)
-        model = str(head["model"]) if "model" in head else "Qwen/Qwen3-Embedding-8B"
-        dim = int(head["dim"]) if "dim" in head else None
-        print(f"# loading query embedder {model} (dim={dim}) on {args.device} ...")
+        print(f"# loading query embedder {model} (dim={dim}) on {args.device} ...", flush=True)
         embedder = Qwen3Embedder(model=model, dim=dim, device=args.device)
     elif args.embedder == "hashing":
         from mathlas.embed import HashingEmbedder
-        import numpy as np
-        head = np.load(args.index, allow_pickle=True)
-        dim = int(head["dim"]) if "dim" in head else 256
-        embedder = HashingEmbedder(dim=dim)
+        embedder = HashingEmbedder(dim=dim or 256)
 
-    print(f"# loading index {args.index} ...")
+    print(f"# loading index {args.index} (matrix + sidecar meta + BM25 build) ...", flush=True)
+    t0 = time.time()
     R = HybridRetriever.from_index(args.index, embedder=embedder,
                                    citation_lambda=args.citation_lambda)
-    print(f"# index: {len(R.docs)} docs, dim={getattr(R, 'index_dim', '?')}, "
-          f"model={getattr(R, 'index_model', '?')}, "
-          f"citation_lambda={args.citation_lambda}")
+    print(f"# index ready in {time.time()-t0:.0f}s: {len(R.docs)} docs, "
+          f"dim={getattr(R, 'index_dim', '?')}, model={getattr(R, 'index_model', '?')}, "
+          f"citation_lambda={args.citation_lambda}", flush=True)
 
     test = _load_test(args.test)
-    print(f"# {len(test)} test queries (all of them — full-corpus index)")
-    ph, th, n = _evaluate(R, test, k=args.k, verbose=args.verbose)
-    _report(ph, th, n, args.k, scope=f"index={os.path.basename(args.index)}")
+
+    # Coverage: which test targets are actually present in our permissive corpus?
+    idx_arxiv, idx_titles = set(), set()
+    for d in R.docs:
+        aid = _arxiv_id(d.source or "")
+        if aid:
+            idx_arxiv.add(aid)
+        tk = _norm_title(d.title or "")
+        if tk:
+            idx_titles.add(tk)
+    reachable = [t for t in test
+                 if (t[1] and t[1] in idx_arxiv) or (t[2] and t[2] in idx_titles)]
+    print(f"# corpus coverage: {len(reachable)}/{len(test)} test targets are in the "
+          f"permissive subset\n#   (the other {len(test)-len(reachable)} target "
+          f"non-permissive arXiv papers we cannot redistribute/index)", flush=True)
+
+    # full-110 (hybrid) -- coverage-limited
+    ph, th, n = _evaluate(R, test, k=args.k, mode="hybrid", verbose=args.verbose)
+    _report(ph, th, n, args.k, scope="full-110 (coverage-limited)")
+
+    # reachable-subset, three channels (the fair number + ablation)
+    if reachable:
+        for mode in ("hybrid", "dense", "sparse"):
+            ph, th, n = _evaluate(R, reachable, k=args.k, mode=mode)
+            _report(ph, th, n, args.k, scope=f"reachable n={len(reachable)} [{mode}]")
+    print("\n# READING: TheoremSearch's 45.0/56.8 was on the FULL 9.2M corpus (every "
+          "target present).\n# Our comparable number is the reachable-subset HYBRID "
+          "row; full-110 is bounded by corpus licensing, not retrieval quality.\n"
+          "# The dense/sparse/hybrid rows isolate the value of our BM25+RRF fusion "
+          "over a dense-only baseline (their design).", flush=True)
 
 
 def run_dev_smoke(args) -> None:

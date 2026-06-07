@@ -339,8 +339,9 @@ def evaluate(program_src: str, problem_id: str,
                 cwd=tmp, env=env, capture_output=True, text=True,
                 timeout=timeout_s)
         except subprocess.TimeoutExpired as e:
-            tail = (e.stdout or b"")
-            tail = tail.decode("utf-8", "replace")[-500:] if isinstance(tail, bytes) else str(tail)[-500:]
+            raw = e.stdout or b""
+            tail = (raw.decode("utf-8", "replace") if isinstance(raw, bytes)
+                    else str(raw))[-500:]
             return EvalResult(problem_id=problem_id, ok=False, score=None,
                               behavior=(), error="timeout", timed_out=True,
                               seconds=time.time() - t0, stdout_tail=tail)

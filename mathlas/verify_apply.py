@@ -63,7 +63,11 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional, Tuple, Union
+
+if TYPE_CHECKING:  # optional bring-your-own-LLM path only; never imported at runtime
+    from .llm import LLM
+    from .map import Mapping
 
 
 class Tier(str, Enum):
@@ -141,7 +145,7 @@ LEAN_TIMEOUT_S = 120
 
 # Cache the resolved Lean executable path (or False if none) so discovery -- which
 # may shell out to ``elan which`` -- runs at most once per process.
-_LEAN_EXE_CACHE: "Optional[object]" = None
+_LEAN_EXE_CACHE: Union[str, bool, None] = None
 
 
 def _candidate_lean_dirs() -> List[str]:
@@ -176,7 +180,7 @@ def find_lean() -> Optional[str]:
     warnings) -> ``elan which lean`` -> ``lean`` on PATH. Cached per process."""
     global _LEAN_EXE_CACHE
     if _LEAN_EXE_CACHE is not None:
-        return _LEAN_EXE_CACHE or None  # False -> None
+        return _LEAN_EXE_CACHE if isinstance(_LEAN_EXE_CACHE, str) else None  # False -> None
 
     found: Optional[str] = None
     env_lean = os.environ.get("LEAN")
@@ -284,7 +288,7 @@ def verify_formal(lean_snippet: Optional[str], *,
             failure=None,
             note=("UNDETERMINED: could not run the Lean kernel check (" + detail
                   + "). Install the Lean toolchain to enable a real check "
-                  "(see docs/04_build.md). " + _TYPECHECK_CAVEAT))
+                  "(see docs/methods.md). " + _TYPECHECK_CAVEAT))
     if ok:
         return ApplyVerdict(
             tier=Tier.FORMAL, applies=True, confidence=1.0,
@@ -444,7 +448,7 @@ def applicability_checklist(candidate_statement: str) -> Checklist:
 
     # De-dupe preserving order; drop empties.
     seen = set()
-    preconds = [p for p in preconds if p and not (p.lower() in seen or seen.add(p.lower()))]
+    preconds = [p for p in preconds if p and not (p.lower() in seen or seen.add(p.lower()))]  # type: ignore[func-returns-value]
     if not preconds:
         preconds = ["(no explicit hypotheses parsed -- AI: infer the result's "
                     "preconditions from its statement and check each)"]

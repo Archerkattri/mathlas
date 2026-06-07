@@ -1,8 +1,5 @@
 """Numeric-beachhead benchmark: recovery@known + false-positive@random.
 
-DEFERRED RUN: do not execute while the DiT-FID GPU benchmark (#562) is running
-(honors the post-crash no-CPU-during-GPU rule). It is light CPU, but we wait.
-
   recovery@known      -- feed the high-precision value of a KNOWN constant,
                          expect a verified closed form back.
   false-positive@random -- feed full-precision STRUCTURELESS irrationals

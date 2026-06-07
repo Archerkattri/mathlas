@@ -61,7 +61,8 @@ class Solution:
     def best(self) -> Optional[AppliedResult]:
         verified = [r for r in self.results if r.verified]
         if verified:
-            return max(verified, key=lambda r: r.verdict.confidence)
+            # ``verified`` guarantees ``verdict is not None`` (see AppliedResult.verified)
+            return max(verified, key=lambda r: r.verdict.confidence if r.verdict else 0.0)
         return self.results[0] if self.results else None
 
     def __str__(self) -> str:

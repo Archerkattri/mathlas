@@ -21,7 +21,7 @@ def norm(s: str) -> str:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--workdir", default="reference/downloads/dolma_index_build")
-    ap.add_argument("--base-meta", default="reference/downloads/index.meta.jsonl")
+    ap.add_argument("--base-meta", default="reference/downloads/index_full.meta.jsonl")
     ap.add_argument("--keep-dups", action="store_true", help="pass through everything, no dedup")
     a = ap.parse_args()
 

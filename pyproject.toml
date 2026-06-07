@@ -3,33 +3,50 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-# NOTE: "mathlas" is a PROVISIONAL name — availability-check on PyPI before
-# publishing (cf. splatreg, where the first pick "gsfit" was already taken).
 name = "mathlas"
-version = "0.1.0"
-description = "A tool FOR an AI (no API key): search existing math + airtight verification + needs<->guarantees scaffolds + provenance, over MCP."
+version = "1.0.0"
+description = "A tool FOR an AI (no API key, no LLM): search existing math over a 1.6M-doc index + airtight numeric/Lean verification + OEIS/PSLQ identification + needs<->guarantees scaffolds, served over MCP."
+readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Krishi Attri", email = "krishiattriwork@gmail.com" }]
-keywords = ["mathematics", "symbolic", "pslq", "theorem-retrieval", "verification", "mcp", "oeis"]
+keywords = ["mathematics", "symbolic", "pslq", "theorem-retrieval", "verification",
+            "mcp", "oeis", "lean", "ramanujan-machine", "funsearch", "ai-tools"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
     "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
     "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
 ]
 # Core (numeric + retrieval + verify + scaffolds) runs with NO LLM, NO API key.
 dependencies = ["mpmath>=1.3", "sympy>=1.12", "numpy>=1.24", "scipy>=1.10"]
+
+[project.urls]
+Homepage = "https://github.com/Archerkattri/mathlas"
+Repository = "https://github.com/Archerkattri/mathlas"
+Issues = "https://github.com/Archerkattri/mathlas/issues"
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.0"]                              # official MCP SDK for the server (a dep-free stdio fallback ships built in)
 # identify_sequence (OEIS) needs NO extra deps: it reads the local stripped.gz /
 # names.gz with the stdlib (gzip). Download them once into reference/downloads/oeis
-# (see docs/04_build.md); the Lean tier (verify_formal) uses an elan-installed
+# (see docs/methods.md); the Lean tier (verify_formal) uses an elan-installed
 # `lean` resolved at runtime (no Python dep). Hence no [sequences]/[formal] extras.
 retrieve = ["pyarrow>=14"]                      # read the open dataset parquets
 embed = ["sentence-transformers>=3.0", "torch>=2.1"]  # Qwen3 production embedder (offline GPU)
+test = ["pytest>=7"]                            # the CPU-only airtight regression suite
+# Dev tooling. black is PINNED to the exact version the repo was formatted with so
+# `black --check` matches the committed style and never proposes a noisy reformat
+# of pre-existing code (a newer/older black would reflow untouched files).
+dev = ["pytest>=7", "black==26.5.1"]
 
 [project.scripts]
 mathlas = "mathlas.cli:main"
@@ -37,3 +54,24 @@ mathlas-mcp = "mathlas.server:main"
 
 [tool.setuptools.packages.find]
 include = ["mathlas*"]
+
+[tool.black]
+# Pinned to black==26.5.1 (see the [dev] extra). 88-col default. Only ever run the
+# PINNED black: a different release reflows untouched, pre-existing files and
+# produces a noisy, spurious diff. The vendored `reference/` tree is gitignored and
+# black skips it automatically.
+line-length = 88
+target-version = ["py39", "py310", "py311", "py312"]
+
+[tool.mypy]
+# These third-party scientific libraries ship no type stubs and no py.typed
+# marker, so mypy cannot analyze them. Silencing the missing-import noise per
+# module (the idiom mypy's own docs recommend) keeps the check focused on our
+# own code rather than blanket-ignoring it inline at every import site.
+[[tool.mypy.overrides]]
+module = ["mpmath", "mpmath.*", "sympy", "sympy.*", "scipy", "scipy.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
