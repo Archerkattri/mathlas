@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.png" alt="mathlas" width="170">
+  <img src="assets/banner.png" alt="mathlas" width="680">
 </p>
 
 # mathlas
