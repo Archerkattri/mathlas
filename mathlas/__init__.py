@@ -65,7 +65,7 @@ from .webaug import (search_directive, SearchDirective, add_finding,
 from .solve import solve, Solution, AppliedResult
 from .llm import LLM, EchoLLM
 
-__version__ = "0.1.0"
+__version__ = "1.0.1"
 __all__ = [
     # numeric (airtight)
     "identify", "Result", "Candidate",

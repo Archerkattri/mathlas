@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Generate NL slogans for the dolma corpus with a LOCAL Qwen3.6-35B-A3B (GGUF) on the GPU.
 
-The free + fast alternative to the Claude-agent path: a local generative LLM batch-generates
-the ~9.76M slogans (compute only, no per-token cost). It drives llama.cpp's `llama-server`
-(true continuous batching) over its OpenAI-compatible API.
+A local generative LLM batch-generates the ~9.76M slogans (compute only, no per-token
+cost). It drives llama.cpp's `llama-server` (true continuous batching) over its
+OpenAI-compatible API.
 
 ONE server per GPU, so you control placement exactly:
   * `--gpus 0`      -> Qwen3.6 on GPU 0 only; GPU 1 stays free for the mathlas embed.
@@ -12,7 +12,7 @@ ONE server per GPU, so you control placement exactly:
 
 Output: `slogan_out/slog_<shard>.jsonl` ({doc_id, slogan}) in --workdir — the exact format
 `apply_slogans.py` folds back into the docs shards. Resumable: skips a shard whose slog file
-exists OR whose docs already carry slogans (e.g. the shards 0-3 the Claude agents did).
+exists OR whose docs already carry slogans (e.g. shards already processed).
 
 Setup (one-time, when a GPU is free): build the server with `scripts/setup_llama_server.sh`,
 then pass its path via --server-bin. (Qwen3.6 has a recent architecture — use an up-to-date

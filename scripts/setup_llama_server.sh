@@ -11,7 +11,8 @@
 set -euo pipefail
 
 DEST="${1:-$HOME/llama.cpp}"
-GGUF="/home/krishi/workspace/benbi/models/qwen36_gguf/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+# Path to the Qwen3.6-35B-A3B GGUF; override with the GGUF env var.
+GGUF="${GGUF:-$HOME/models/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf}"
 
 if [ ! -d "$DEST/.git" ]; then
   echo "[setup] cloning llama.cpp -> $DEST"
