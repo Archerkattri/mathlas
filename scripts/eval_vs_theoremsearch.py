@@ -263,7 +263,8 @@ def run_dev_smoke(args) -> None:
     try:
         R = HybridRetriever.from_index(tmp.name, embedder=HashingEmbedder(),
                                        label_in_embed=args.label_in_embed,
-                                       citation_lambda=args.citation_lambda)
+                                       citation_lambda=args.citation_lambda,
+                                       bm25_cache=None)  # throwaway temp index: no persisted cache
         print(f"# served temp index: {len(R.docs)} docs, dim={R.index_dim}")
         test = _load_test(f"{base}/theorems-test.parquet")
         # only score queries whose paper is reachable (others can't possibly hit).

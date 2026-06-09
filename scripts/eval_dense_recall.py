@@ -49,6 +49,11 @@ def main() -> None:
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--ks", default="1,5,10,20")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--save-queries", default=None,
+                    help="optional .npz path: save {idx, Q} (sampled doc rows + "
+                         "their embedded body-queries) so downstream evals "
+                         "(hybrid/rerank/dual-channel) reuse the exact same "
+                         "query set without re-running the 8B embedder")
     args = ap.parse_args()
     ks = [int(x) for x in args.ks.split(",")]
     maxk = max(ks)
@@ -85,6 +90,10 @@ def main() -> None:
     Q = emb.encode(queries, is_query=True).astype(np.float32)        # (n, dim)
     Q /= np.linalg.norm(Q, axis=1, keepdims=True).clip(1e-12)
     print(f"# embedded {len(queries)} body-queries in {time.time()-t0:.0f}s", flush=True)
+    if args.save_queries:
+        np.savez(args.save_queries, idx=idx, Q=Q.astype(np.float16),
+                 seed=args.seed, n=len(idx), model=model)
+        print(f"# saved query embeddings -> {args.save_queries}", flush=True)
 
     # Dense retrieval on CPU (the 8B already used the GPU; matrix is 1.34M x 4096).
     M = matrix.astype(np.float32)

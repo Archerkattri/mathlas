@@ -11,6 +11,13 @@ SIGIR 2009): ``score(d) = sum_channels 1/(rrf_k + rank_d)``. RRF is unsupervised
 needs no score normalisation, and is the consistently-best simple fusion -- the
 right choice when one channel (here the default HashingEmbedder) may be weak.
 
+``rrf_k`` defaults to 10 (not the literature-traditional 60): tuned on the full
+3.68M production index, n=3000 body-query self-recall (scripts/
+eval_retrieval_upgrades.py rrf, 2026-06-09) -- k=10 beat k=60 on every metric
+(R@1 0.771 vs 0.764, R@5 0.991 vs 0.963, R@10 0.999 vs 0.991, MRR 0.869 vs
+0.855); k=20 sat between. A smaller k weights each channel's top hits harder,
+which suits two channels of very different precision profiles.
+
 OPTIONAL citation-weighted rerank: ``score = fused + lambda*log(max(cites,1))``
 adds a light "the field already leans on this result" prior. Default ``lambda=0``
 (pure fusion, no behaviour change) -- it is opt-in because the published target
@@ -29,6 +36,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import sys
 from typing import List, Optional, Sequence
 
 import numpy as np
@@ -36,10 +44,11 @@ import numpy as np
 from . import Candidate, Retriever
 from .bm25 import BM25Index
 from .corpus import Document, doc_from_meta
+from .rerank import Reranker, doc_rerank_text
 from ..embed import Embedder, HashingEmbedder
 
 
-def rrf_fuse(rankings: Sequence[Sequence[int]], rrf_k: int = 60) -> dict:
+def rrf_fuse(rankings: Sequence[Sequence[int]], rrf_k: int = 10) -> dict:
     """Reciprocal Rank Fusion. Each ``ranking`` is doc-ids best-first. Returns
     ``{doc_id: fused_score}``."""
     fused: dict = {}
@@ -65,19 +74,51 @@ class HybridRetriever(Retriever):
 
     def __init__(self, documents: Sequence[Document],
                  embedder: Optional[Embedder] = None,
-                 rrf_k: int = 60, channel_depth: int = 50,
+                 rrf_k: int = 10, channel_depth: int = 50,
                  citation_lambda: float = 0.0,
                  _precomputed_emb: Optional[np.ndarray] = None,
-                 _faiss_index=None, build_bm25: bool = True) -> None:
+                 _faiss_index=None, build_bm25: bool = True,
+                 _prebuilt_bm25: Optional[BM25Index] = None,
+                 statement_matrix: Optional[np.ndarray] = None,
+                 reranker: Optional[Reranker] = None,
+                 rerank_depth: int = 100) -> None:
         self.docs: List[Document] = list(documents)
         self.embedder = embedder or HashingEmbedder()
         self.rrf_k = int(rrf_k)
         self.channel_depth = int(channel_depth)
         self.citation_lambda = float(citation_lambda)
+        self.reranker = reranker
+        self.rerank_depth = int(rerank_depth)
+
+        # OPT-IN second dense channel: the same docs embedded by their CLEANED
+        # STATEMENT text (vs the default slogan channel). Attacks the
+        # cross-representation gap directly -- a LaTeX-shaped query matches the
+        # statement channel; a prose query matches the slogan channel. The two
+        # dense channels are combined per-doc by MAX-SIM into ONE dense ranking
+        # (then fused with BM25 as usual): on the 200k-prefix mechanism check
+        # (docs/RETRIEVAL_UPGRADE_NOTES.md, 2026-06-09) max-sim hit R@1 0.981
+        # vs 0.872 for treating the statement channel as a third RRF channel
+        # and 0.833 for slogan-only. Row-aligned with ``documents``; default
+        # None keeps behaviour exactly as before.
+        if statement_matrix is not None:
+            sm = np.asarray(statement_matrix)
+            if sm.shape[0] != len(self.docs):
+                raise ValueError(
+                    f"statement matrix rows ({sm.shape[0]}) != docs "
+                    f"({len(self.docs)})")
+            self._stmt_emb: Optional[np.ndarray] = _ensure_unit_rows(
+                sm.astype(np.float32))
+        else:
+            self._stmt_emb = None
 
         # SPARSE channel: BM25 over sparse_text. Optional -- off for very large faiss-served
         # indexes where an in-memory inverted index over every doc is impractical (dense-only).
-        self._bm25 = BM25Index([d.sparse_text for d in self.docs]) if build_bm25 else None
+        # A ``_prebuilt_bm25`` (e.g. loaded from a cache by ``from_index``) is adopted as-is so
+        # the corpus is never re-tokenized; otherwise it is built now iff ``build_bm25``.
+        if _prebuilt_bm25 is not None:
+            self._bm25 = _prebuilt_bm25
+        else:
+            self._bm25 = BM25Index([d.sparse_text for d in self.docs]) if build_bm25 else None
 
         # DENSE channel, exactly one mode: a prebuilt FAISS ANN index (the 10M+ scale path, query
         # searched against it), a precomputed flat matrix (from_index, exact dot-product), or
@@ -104,9 +145,14 @@ class HybridRetriever(Retriever):
     # ------------------------------------------------------------------ #
     @classmethod
     def from_index(cls, path: str, embedder: Optional[Embedder] = None,
-                   rrf_k: int = 60, channel_depth: int = 50,
+                   rrf_k: int = 10, channel_depth: int = 50,
                    citation_lambda: float = 0.0,
-                   label_in_embed: bool = False) -> "HybridRetriever":
+                   label_in_embed: bool = False,
+                   with_bm25: bool = True,
+                   bm25_cache: Optional[str] = "auto",
+                   statement_index: Optional[str] = None,
+                   reranker: Optional[Reranker] = None,
+                   rerank_depth: int = 100) -> "HybridRetriever":
         """Build a retriever from a prebuilt ``index.npz``.
 
         The npz (written by ``scripts/build_index_mp.py finalize``) holds
@@ -117,13 +163,34 @@ class HybridRetriever(Retriever):
         full-corpus meta is far too large to store as an npz string scalar. Small
         dev indices may instead carry an in-npz ``meta`` JSON list; both are
         handled. We attach ``matrix`` directly as the dense index (NO re-embedding
-        of documents), rebuild BM25 from the meta's ``sparse_text``, and embed
+        of documents), obtain BM25 over the meta's ``sparse_text``, and embed
         *queries* with ``embedder`` at query time.
 
         ``embedder`` MUST be the same model the matrix was built with (so query
         and document vectors live in the same space). On CPU that means the
         Qwen3 query encode runs at query time; pass a matching ``Qwen3Embedder``.
         For a CPU dev-smoke a ``HashingEmbedder`` matrix + the same embedder works.
+
+        ``with_bm25`` (default ``True``) turns the sparse channel on -> the served
+        retriever is the full dense+BM25+RRF. ``bm25_cache`` controls where the
+        sparse index is persisted so it is built ONCE rather than re-tokenized at
+        every load (which is slow on a multi-million-doc corpus):
+
+          * ``"auto"`` (default) -> a ``<index-stem>.bm25`` bundle beside the index;
+            loaded if present and fresh, else built once and saved there;
+          * an explicit path -> that bundle location;
+          * ``None`` -> no caching (build in memory each load; the old behaviour,
+            handy for throwaway/temp indexes).
+
+        The cache is invalidated automatically if the corpus changes (its doc
+        count or the meta file's size/mtime no longer match), so a stale bundle is
+        rebuilt rather than served. ``with_bm25=False`` serves dense-only.
+
+        ``statement_index`` (opt-in) names a SECOND npz whose ``matrix`` is the
+        same corpus embedded by its cleaned STATEMENT text (built by
+        ``scripts/build_statement_channel.py``), row-aligned with ``path``'s
+        matrix; it becomes a third RRF channel (see ``__init__``). ``reranker``
+        (opt-in) injects a cross-encoder used when ``retrieve(..., rerank=True)``.
         """
         data = np.load(path, allow_pickle=True)
         matrix = np.asarray(data["matrix"])
@@ -151,9 +218,27 @@ class HybridRetriever(Retriever):
             raise ValueError(
                 f"index matrix rows ({matrix.shape[0]}) != meta docs "
                 f"({len(docs)}) in {path}")
+        # SPARSE channel: load a prebuilt BM25 from the cache beside the index, or
+        # build it once and persist it there. Building BM25 over a multi-million-doc
+        # corpus (tokenize every doc + assemble the CSR matrix) costs minutes; the
+        # cache turns later loads into a few fast array reads. ``with_bm25=False``
+        # serves dense-only (e.g. when the sparse channel is intentionally dropped).
+        bm25 = (cls._load_or_build_bm25(docs, path, sidecar, bm25_cache)
+                if with_bm25 else None)
+        stmt_matrix = None
+        if statement_index is not None:
+            sdata = np.load(statement_index, allow_pickle=True)
+            stmt_matrix = np.asarray(sdata["matrix"])
+            if stmt_matrix.shape != matrix.shape:
+                raise ValueError(
+                    f"statement index shape {stmt_matrix.shape} != slogan index "
+                    f"shape {matrix.shape}; the channels must be row-aligned "
+                    f"embeddings of the SAME corpus ({statement_index} vs {path})")
         retr = cls(docs, embedder=embedder, rrf_k=rrf_k,
                    channel_depth=channel_depth, citation_lambda=citation_lambda,
-                   _precomputed_emb=matrix)
+                   _precomputed_emb=matrix, build_bm25=False, _prebuilt_bm25=bm25,
+                   statement_matrix=stmt_matrix, reranker=reranker,
+                   rerank_depth=rerank_depth)
         # surface a couple of index facts for introspection / logging.
         retr.index_path = os.fspath(path)
         retr.index_dim = int(data["dim"]) if "dim" in data else matrix.shape[1]
@@ -166,9 +251,90 @@ class HybridRetriever(Retriever):
                 f"same model the index was built with (index model={retr.index_model}).")
         return retr
 
+    # ------------------------------------------------------------------ #
+    # BM25 cache plumbing (used by ``from_index``): load a prebuilt sparse index
+    # from disk when fresh, else build it once and persist it beside the dense
+    # index, keeping the cache correctly invalidated when the corpus changes.
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _resolve_bm25_cache_path(index_path: str,
+                                 bm25_cache: Optional[str]) -> Optional[str]:
+        """``None`` -> caching disabled; ``"auto"`` -> ``<index-stem>.bm25`` beside
+        the index; any other value -> that explicit bundle path."""
+        if bm25_cache is None:
+            return None
+        if bm25_cache == "auto":
+            return os.path.splitext(os.fspath(index_path))[0] + ".bm25"
+        return os.fspath(bm25_cache)
+
+    @staticmethod
+    def _bm25_cache_fresh(bm: BM25Index, cache: str, docs: Sequence[Document],
+                          meta_path: Optional[str]) -> bool:
+        """A cache is fresh iff its doc count matches the corpus AND -- when a
+        ``source.json`` fingerprint and the meta file are both present -- the meta
+        file's size+mtime are unchanged. The doc-count guard is load-bearing: a
+        row-misaligned BM25 would return wrong/garbage doc ids; the size/mtime
+        guard additionally catches a same-count corpus rebuild."""
+        if bm.n != len(docs):
+            return False
+        src = os.path.join(cache, "source.json")
+        if not meta_path or not os.path.exists(src):
+            return True  # count matches and nothing finer to check -> trust it
+        try:
+            with open(src, encoding="utf-8") as f:
+                info = json.load(f)
+            st = os.stat(meta_path)
+            return (int(info.get("n", -1)) == len(docs)
+                    and int(info.get("meta_size", -1)) == st.st_size
+                    and int(info.get("meta_mtime_ns", -1)) == st.st_mtime_ns)
+        except Exception:
+            return True  # fingerprint unreadable but count matched -> still serve
+
+    @staticmethod
+    def _write_bm25_source(cache: str, meta_path: Optional[str], n: int) -> None:
+        """Record a small provenance fingerprint of the corpus the cache was built
+        from, so a later ``from_index`` can detect a rebuilt/changed corpus."""
+        info: dict = {"n": int(n)}
+        if meta_path and os.path.exists(meta_path):
+            st = os.stat(meta_path)
+            info["meta_path"] = os.path.abspath(meta_path)
+            info["meta_size"] = int(st.st_size)
+            info["meta_mtime_ns"] = int(st.st_mtime_ns)
+        with open(os.path.join(cache, "source.json"), "w", encoding="utf-8") as f:
+            json.dump(info, f)
+
+    @classmethod
+    def _load_or_build_bm25(cls, docs: Sequence[Document], index_path: str,
+                            meta_path: Optional[str],
+                            bm25_cache: Optional[str]) -> BM25Index:
+        cache = cls._resolve_bm25_cache_path(index_path, bm25_cache)
+        if cache and os.path.isdir(cache):
+            try:
+                bm = BM25Index.load(cache)
+            except Exception as e:            # corrupt / version-mismatched bundle
+                _log(f"BM25 cache at {cache} unreadable ({e}); rebuilding.")
+            else:
+                if cls._bm25_cache_fresh(bm, cache, docs, meta_path):
+                    return bm                 # FAST PATH: no tokenization
+                _log(f"BM25 cache at {cache} is stale (corpus changed); rebuilding.")
+        # build once (the slow path) and persist for next time.
+        if cache:
+            _log(f"building BM25 cache over {len(docs)} docs -> {cache} "
+                 f"(one-time; minutes at multi-million scale)...")
+        bm = BM25Index([d.sparse_text for d in docs])
+        if cache:
+            try:
+                bm.save(cache)
+                cls._write_bm25_source(cache, meta_path, len(docs))
+                _log(f"wrote BM25 cache: {cache}")
+            except Exception as e:            # caching is best-effort; never fatal
+                _log(f"could not write BM25 cache to {cache} ({e}); "
+                     f"serving without a persisted cache.")
+        return bm
+
     @classmethod
     def from_faiss(cls, faiss_path: str, meta_path: Optional[str] = None,
-                   embedder: Optional[Embedder] = None, rrf_k: int = 60,
+                   embedder: Optional[Embedder] = None, rrf_k: int = 10,
                    channel_depth: int = 50, citation_lambda: float = 0.0,
                    with_bm25: bool = False, label_in_embed: bool = False) -> "HybridRetriever":
         """Serve a large corpus from a prebuilt FAISS ANN index (the 10M+ scale path).
@@ -214,12 +380,58 @@ class HybridRetriever(Retriever):
             _, idx = self._faiss.search(qn, k)
             return [int(i) for i in idx[0] if i >= 0]
         sims = self._emb @ q                      # rows are unit-norm -> cosine
+        if self._stmt_emb is not None:
+            # dual-channel max-sim: each doc scores by its best representation
+            # (slogan or cleaned statement); see __init__ for the measurement.
+            sims = np.maximum(sims, self._stmt_emb @ q)
         return [int(i) for i in np.argsort(-sims)[:k]]
 
-    def retrieve(self, query: str, k: int = 10, mode: str = "hybrid") -> List[Candidate]:
+    def _maybe_rerank(self, query: str, ranked: List[int]) -> List[int]:
+        """Cross-encoder rerank of the top ``rerank_depth`` fused candidates,
+        BLENDED with the first-stage order by RRF (not a replacement).
+
+        Why blend: measured on the 3.68M-index self-recall proxy (n=1000,
+        docs/RETRIEVAL_UPGRADE_NOTES.md, 2026-06-09), replacing the first-stage
+        order with the raw cross-encoder order DROPS R@1 (a reranker orders by
+        relevance, not exact identity, and this corpus holds many same-content
+        theorem variants), while RRF-fusing the rerank ranking with the
+        first-stage ranking lifted every metric in the honest cross-
+        representation setting (dense channel: R@1 0.731 -> 0.748, R@10
+        0.950 -> 0.989). The first-stage prior stays in the loop.
+
+        Honest fallback: if the reranker cannot load (no torch/transformers, no
+        weights, no GPU memory), we SAY so on stderr and return the fused order
+        unchanged -- never a silent pretend-rerank, never a crash of retrieval.
+        """
+        if self.reranker is None or not ranked:
+            return ranked
+        head, tail = ranked[:self.rerank_depth], ranked[self.rerank_depth:]
+        try:
+            texts = [doc_rerank_text(self.docs[i].name, self.docs[i].slogan,
+                                     self.docs[i].statement) for i in head]
+            scores = self.reranker.score(query, texts)
+        except Exception as e:  # ImportError / OSError / CUDA OOM ...
+            _log(f"reranker unavailable ({type(e).__name__}: {e}); "
+                 f"serving the un-reranked dense+BM25 fusion.")
+            return ranked
+        order = np.argsort(-np.asarray(scores), kind="stable")
+        rerank_order = [head[int(i)] for i in order]
+        blended = rrf_fuse([head, rerank_order], rrf_k=self.rrf_k)
+        head_out = [d for d, _ in
+                    sorted(blended.items(), key=lambda kv: kv[1], reverse=True)]
+        return head_out + tail
+
+    def retrieve(self, query: str, k: int = 10, mode: str = "hybrid",
+                 rerank: Optional[bool] = None) -> List[Candidate]:
         """``mode``: ``hybrid`` (dense+BM25+RRF, the default and production path),
         or ``dense``/``sparse`` for single-channel ablation. Single-channel modes
-        rank by that channel's RRF-shaped score so the top-k cut is comparable."""
+        rank by that channel's RRF-shaped score so the top-k cut is comparable.
+        The opt-in statement channel (if loaded) is folded into the dense
+        ranking by per-doc max-sim (see ``_dense_rank``).
+
+        ``rerank``: ``True`` -> cross-encoder rerank of the top ``rerank_depth``
+        fused candidates (requires an injected ``reranker``); ``None`` (default)
+        -> rerank exactly when a reranker was injected; ``False`` -> never."""
         depth = max(k, self.channel_depth)
         dense = self._dense_rank(query, depth) if mode in ("hybrid", "dense") else []
         sparse = ([i for i, _ in self._bm25.search(query, depth)]
@@ -236,7 +448,18 @@ class HybridRetriever(Retriever):
                 c = self.docs[doc_id].citations
                 if c and c > 0:
                     fused[doc_id] += lam * math.log(c)
-        top = sorted(fused.items(), key=lambda kv: kv[1], reverse=True)[:k]
+        ranked = [d for d, _ in
+                  sorted(fused.items(), key=lambda kv: kv[1], reverse=True)]
+        do_rerank = (self.reranker is not None) if rerank is None else bool(rerank)
+        if do_rerank:
+            if self.reranker is None:
+                _log("retrieve(rerank=True) but no reranker injected; "
+                     "serving the un-reranked fusion.")
+            else:
+                ranked = self._maybe_rerank(
+                    query, ranked[:max(self.rerank_depth, k)]) + \
+                    ranked[max(self.rerank_depth, k):]
+        top = [(d, fused[d]) for d in ranked[:k]]
         out: List[Candidate] = []
         for doc_id, score in top:
             d = self.docs[doc_id]
@@ -250,6 +473,13 @@ class HybridRetriever(Retriever):
                       "category": d.category, "source": d.source},
             ))
         return out
+
+
+def _log(msg: str) -> None:
+    """Operational notice to STDERR only — never stdout, which the MCP server
+    reserves for JSON-RPC. Emitted just on the slow BM25 cache build/rebuild/
+    failure paths; the fast cached-load path stays silent."""
+    print(f"[mathlas] {msg}", file=sys.stderr, flush=True)
 
 
 def _ensure_unit_rows(x: np.ndarray) -> np.ndarray:
