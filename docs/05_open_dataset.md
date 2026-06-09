@@ -5,17 +5,18 @@ describes what that index contains, how it is built, and how it is evaluated.
 
 ## The served index
 
-The served index (`reference/downloads/index_full_dense.npz`, the default in
-`server.py`) is an **exact** (PQ-free) dense matrix of **1,635,233** documents,
-embedded with Qwen3-Embedding-8B (4096-d, fp16) and fused with Okapi-BM25 by
-Reciprocal Rank Fusion:
+The current served index is an **exact** (PQ-free) dense matrix of **3,683,428**
+documents, embedded with Qwen3-Embedding-8B (4096-d, fp16) and fused with
+Okapi-BM25 by Reciprocal Rank Fusion:
 
 | Source | Docs | License | Embedded text |
 |---|---|---|---|
 | TheoremSearch permissive subset | 1,341,083 | CC-BY / CC0 | NL slogan |
-| arXiv-math (Dolma) | 294,150 | permissive arXiv | NL slogan |
-| Stacks Project | 12,693 | CC-BY-SA | NL slogan |
-| ProofWiki | 23,871 | CC-BY-SA | NL slogan |
+| arXiv-math (Dolma), slogan-embedded | 2,342,345 | permissive arXiv | NL slogan |
+
+(The earlier **1,635,233-doc** build additionally carried smaller Stacks Project
+12,693 + ProofWiki 23,871 slices and only 294,150 Dolma docs; the 2026-06 rebuild
+expanded Dolma ~8× with the slogan-embedding pass below.)
 
 Every source is openly licensed and redistributable. Each document is embedded by its
 natural-language **slogan** — the meaning of the theorem, not its LaTeX — so the whole
@@ -24,11 +25,12 @@ than notation.
 
 ## Retrieval accuracy
 
-On a held-out **81,833-document** test split, querying each theorem by its
-natural-language slogan retrieves its own entry at **R@1 0.977 / R@10 0.998**; querying
-by the raw formal statement (the harder cross-representation test, formal LaTeX in,
-NL-slogan entry out) retrieves it at **R@10 0.923**. Reproduce with
-`scripts/eval_benchmark.py all`.
+At the current **3,683,428-doc** scale, the honest headline is the
+cross-representation self-recall — querying by a document's raw **body** against
+its slogan-embedded entry: **R@1 0.614 / R@10 0.832**. (At the earlier 1.635M
+build, on its held-out 81,833-doc test split, the easier same-representation
+slogan→slogan self-recall was R@1 0.977 / R@10 0.998 and statement→slogan
+R@10 0.923; reproduce with `scripts/eval_benchmark.py all`.)
 
 ## How the corpus is built
 

@@ -11,8 +11,9 @@ returned result is an independently-checkable fact, and on inputs with no such f
 the tool returns *nothing* rather than a plausible guess (the honesty gate). The
 **zero false-positive rate across every tier** below is that discipline holding.
 
-_Last validated: 2026-06-06. Hardware: single box, CPU tiers; retrieval used 2×GPU
-for the offline index build + 1 GPU for the query encoder._
+_Last validated: 2026-06-06 (tiers) / 2026-06-09 (retrieval numbers refreshed for
+the 3.68M index). Hardware: single box, CPU tiers; retrieval used 2×GPU for the
+offline index build + 1 GPU for the query encoder._
 
 ---
 
@@ -97,18 +98,39 @@ through the real server). The server calls no LLM and needs no API key.
 
 ## 3. Retrieval
 
-The served index is Qwen3-Embedding-8B (4096-d) over **1,635,233** documents — the
-permissive CC-BY/CC0 TheoremSearch subset (1,341,083) **+** arXiv-math from Dolma
-(294,150) + Stacks + ProofWiki — as an **exact** (PQ-free) dense matrix + Okapi-BM25
-+ RRF. Two evaluations: a **large-n self-recall** over the held-out test split (the
-tight number), and the **head-to-head vs TheoremSearch** on the dataset's 110
-human-written queries (the small-n external comparison).
+The served index is Qwen3-Embedding-8B (4096-d) over **3,683,428** documents — the
+permissive CC-BY/CC0 TheoremSearch subset (1,341,083) **+** **2,342,345**
+slogan-embedded arXiv-math documents from Dolma — as an **exact** (PQ-free) dense
+matrix + Okapi-BM25 + RRF. Three evaluations: the **honest headline self-recall at
+the current 3.68M scale** (§3a0), a **large-n self-recall** at the earlier 1.635M
+build (§3a, kept relabeled to its context), and the **head-to-head vs
+TheoremSearch** on the dataset's 110 human-written queries (§3b, small-n external).
 
-### 3a. Large-n self-recall — the held-out 81,833-doc test split
+### 3a0. Honest headline — cross-representation self-recall at the current 3.68M index
 
-`scripts/eval_benchmark.py all` holds out the **81,833-document** test split, then
-queries **each** held-out theorem two ways against the **full 1.635M index** and
-checks whether its own row is retrieved (exact dense cosine, no PQ):
+Querying by a document's raw **body** against its **slogan-embedded** index entry
+(the hard cross-representation regime, and the realistic one for the
+slogan-embedded Dolma majority of the corpus), at the full **3,683,428-doc** scale:
+
+| Query form | R@1 | R@10 |
+|---|---|---|
+| **BODY → slogan** (cross-representation) | **0.614** | **0.832** |
+
+This is the number to quote for the served index. It is *lower* than the older
+slogan→slogan figure below because (a) the corpus is 2.25× larger and (b)
+body→slogan is a strictly harder, more honest regime than querying a slogan
+against itself-as-slogan.
+
+### 3a. Large-n self-recall — the held-out 81,833-doc test split (earlier 1.635M build)
+
+**Context: these numbers were measured at the earlier 1,635,233-doc build** (the
+TheoremSearch subset + 294,150 Dolma docs + Stacks + ProofWiki) and are kept here
+relabeled — the slogan→slogan row in particular is the *easy* same-representation
+regime and must not be quoted as the current index's recall.
+
+`scripts/eval_benchmark.py all` held out the **81,833-document** test split, then
+queried **each** held-out theorem two ways against the full 1.635M index of that
+build and checked whether its own row is retrieved (exact dense cosine, no PQ):
 
 | Query form | R@1 | R@5 | R@10 | R@20 |
 |---|---|---|---|---|
@@ -155,10 +177,10 @@ retrieval is therefore **on-par** with the SOTA open tool — the differentiatio
 *system* (open, MCP-native, + the verification/conjecture tiers above), not a
 retrieval-quality leap.
 
-(The large-n self-recall in §3a — n=81,833 over the full 1.635M index — is the tight
-complement to this small-n=15 external comparison: the dense channel matches a theorem
-across its formal and natural-language surface forms with slogan R@1 0.977 / R@10 0.998
-and statement R@10 0.923 at full scale.)
+(The large-n self-recalls — §3a0 at the current 3.68M scale (body→slogan R@1 0.614 /
+R@10 0.832) and §3a at the earlier 1.635M build — are the tight complement to this
+small-n=15 external comparison: they measure cross-representation matching over the
+whole corpus rather than 110 hand-written queries.)
 
 ### 3c. The self-augmenting loop in action — repairing the withheld-corpus gap to beat everyone
 
@@ -224,8 +246,8 @@ CUDA_VISIBLE_DEVICES=0 HF_HUB_CACHE=$ME/reference/downloads/hf PYTHONPATH=$ME \
 Across **numeric, sequence, formal, ramanujan, and the moat scaffold**, recovery is
 100% on knowns and **false-positives are 0** — mathlas returns a checkable fact or an
 honest "nothing," never a confident hallucination. That gate, plus the AI-uses-the-
-tool MCP design over a real **1.635M-doc** index (slogan R@10 **0.998** at n=81,833),
-is the contribution.
+tool MCP design over a real **3.68M-doc** index (body→slogan cross-representation
+self-recall R@1 **0.614** / R@10 **0.832** at full scale), is the contribution.
 
 ## 5. Reproduce everything
 
@@ -235,8 +257,8 @@ PYTHONPATH=. python3 benchmarks/numeric_bench.py     # constant tier
 PYTHONPATH=. python3 benchmarks/tier_bench.py        # sequence / formal / ramanujan
 PYTHONPATH=. python3 benchmarks/moat_bench.py        # applicability scaffold
 PYTHONPATH=. python3 benchmarks/tools_bench.py       # FunSearch harness + web-aug (14/14)
-# retrieval, large-n self-recall over the 81,833-doc held-out split (needs the built
-# 1.635M index + 2 GPUs for the embed; exact dense search on cuda:0):
+# retrieval, large-n self-recall over the 81,833-doc held-out split (needs the
+# built index + 2 GPUs for the embed; exact dense search on cuda:0):
 PYTHONPATH=. python3 scripts/eval_benchmark.py all --procs 2
 # retrieval, head-to-head vs TheoremSearch on the 110 human-written queries:
 CUDA_VISIBLE_DEVICES=0 HF_HUB_CACHE=reference/downloads/hf PYTHONPATH=. \
@@ -249,14 +271,19 @@ CUDA_VISIBLE_DEVICES=0 HF_HUB_CACHE=reference/downloads/hf PYTHONPATH=. \
 
 - The end-to-end *informal* applicability **decision** is the AI's, not mathlas's
   (mathlas supplies the checklist). Only the scaffold is benchmarked here.
-- The §3a large-n number (n=81,833, slogan R@10 0.998) is a **self-recall** proxy
-  (query = a theorem's own slogan/statement, target = its own row), not human queries;
-  it measures cross-representation matching over the whole corpus, the right tight
-  complement to the small-n=15 *human-written* head-to-head, but the two measure
-  different things and neither alone is the full story.
+- The §3a0/§3a large-n numbers are **self-recall** proxies (query = a document's
+  own body/slogan/statement, target = its own row), not human queries; they measure
+  cross-representation matching over the whole corpus, the right tight complement to
+  the small-n=15 *human-written* head-to-head, but the two measure different things
+  and neither alone is the full story. The honest current-index headline is the
+  §3a0 body→slogan number (R@1 0.614 / R@10 0.832 at 3.68M); the old slogan→slogan
+  0.977/0.998 belongs to the easier regime at the earlier 1.635M build only.
 - "Conjectured" Ramanujan relations are *numerically verified*, **not proved** —
   provenance is labeled `CONJECTURED_RELATION`; take them to `verify_formal` / a human.
-- Coverage is the permissive corpus (1.635M docs: the CC-BY/CC0 TheoremSearch subset +
-  Dolma arXiv-math + Stacks + ProofWiki); the full 9.2M arXiv corpus is not
+- `search_formal_math` hits come from the EXTERNAL public Loogle/LeanSearch indexes
+  (provenance `external:<service>`), not the mathlas corpus; when a service is down
+  the tool reports it honestly instead of fabricating hits.
+- Coverage is the permissive corpus (3.68M docs: the CC-BY/CC0 TheoremSearch subset +
+  slogan-embedded Dolma arXiv-math); the full 9.2M arXiv corpus is not
   redistributable, so some literature is simply absent (a data-licensing limit, not a
   method limit).

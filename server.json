@@ -1,0 +1,37 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
+  "name": "io.github.archerkattri/mathlas",
+  "description": "Airtight math for AI agents: 3.68M-doc theorem search + numeric/Lean verification. No LLM, no key.",
+  "status": "active",
+  "repository": {
+    "url": "https://github.com/Archerkattri/mathlas",
+    "source": "github"
+  },
+  "version": "1.1.0",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "mathlas-mcp",
+      "version": "1.1.0",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "MATHLAS_SEED",
+          "description": "Set to 1 to force the lightweight built-in seed corpus and never load the multi-GB prebuilt index (fast cold start).",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "MATHLAS_INDEX",
+          "description": "Path to a prebuilt index .npz to serve for search_existing_math (optional; the seed corpus is used when absent).",
+          "isRequired": false,
+          "isSecret": false
+        }
+      ]
+    }
+  ]
+}

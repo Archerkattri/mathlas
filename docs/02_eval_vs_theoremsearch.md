@@ -120,6 +120,7 @@ HF_HUB_CACHE=$ME/reference/downloads/hf python3 $ME/scripts/build_index_mp.py al
   --out $ME/reference/downloads/index.npz --ngpu 2
 ```
 
-For a large-n, statistically tight retrieval benchmark, the held-out self-recall over
-the 1.635M index (slogan R@1 0.977 / R@10 0.998 at n=81,833) is the complementary
-measurement; see [`../RESULTS.md` §3a](../RESULTS.md).
+For a large-n, statistically tight retrieval benchmark, the self-recall numbers are
+the complementary measurement: body→slogan R@1 0.614 / R@10 0.832 at the current
+3.68M index, and (at the earlier 1.635M build, n=81,833 held-out) slogan→slogan
+R@1 0.977 / R@10 0.998; see [`../RESULTS.md` §3a0/§3a](../RESULTS.md).

@@ -130,6 +130,10 @@ def test_dense_finding_surfaced_on_paraphrase(tmp_path, monkeypatch):
     from mathlas import server, webaug
 
     monkeypatch.setenv("MATHLAS_FINDINGS", str(tmp_path / "findings.jsonl"))
+    # Force the in-process seed corpus so ``tool_search_existing_math`` uses the
+    # injected ``"<seed>"`` retriever below and NEVER the (multi-GB) prebuilt index
+    # that may exist at the default path — keeps this CPU-only test hermetic + fast.
+    monkeypatch.setenv("MATHLAS_SEED", "1")
     webaug._LIVE_CACHE.clear()
 
     emb = HashingEmbedder(dim=256)
@@ -222,6 +226,112 @@ def test_add_finding_bm25_only_backward_compatible(tmp_path, monkeypatch):
     assert any("Turán" in h.get("statement", "") for h in hits)
 
 
+# --- BM25 sparse-index cache (build once, reload without re-tokenizing) ------------
+
+
+def test_bm25_save_load_roundtrip(tmp_path):
+    """A saved BM25 index reloads to an IDENTICAL searcher WITHOUT re-tokenizing:
+    same top-k doc ids + scores for every query, same vocab/idf/doc_len/tf. This is
+    what lets the multi-million-doc served index skip the slow in-memory rebuild."""
+    import numpy as np
+    from mathlas.retrieve.bm25 import BM25Index
+
+    corpus = [
+        "Banach fixed point theorem contraction complete metric space unique",
+        "etale cohomology of schemes Grothendieck topology",
+        "every bounded sequence has a convergent subsequence Bolzano Weierstrass",
+        "the sum over n of 1 over n squared equals pi squared over six Basel",
+        "",  # empty-document edge case
+    ]
+    bm = BM25Index(corpus)
+    bundle = bm.save(str(tmp_path / "small.bm25"))
+    bm2 = BM25Index.load(bundle)
+
+    for q in ["Banach contraction", "etale cohomology",
+              "bounded sequence convergent subsequence", "pi squared six",
+              "token_not_in_any_document"]:
+        assert bm.search(q, k=10) == bm2.search(q, k=10)
+    assert (bm.k1, bm.b, bm.n) == (bm2.k1, bm2.b, bm2.n)
+    assert bm.avgdl == pytest.approx(bm2.avgdl)
+    assert bm.vocab == bm2.vocab
+    assert np.array_equal(bm.idf, bm2.idf)
+    assert np.array_equal(bm.doc_len, bm2.doc_len)
+    assert (bm.tf != bm2.tf).nnz == 0          # identical sparse term-doc matrix
+
+    # a foreign/empty directory is refused honestly, not mis-loaded.
+    with pytest.raises((FileNotFoundError, ValueError)):
+        BM25Index.load(str(tmp_path / "does_not_exist.bm25"))
+
+
+def test_from_index_bm25_cache_roundtrip(tmp_path):
+    """``from_index`` builds the BM25 cache once, then LOADS it (no rebuild) on the
+    next call with identical results; rebuilds when the corpus changes; honours
+    ``with_bm25=False`` (dense-only) and ``bm25_cache=None`` (no persisted cache)."""
+    import json
+    import os
+    import numpy as np
+    from mathlas.embed import HashingEmbedder
+    from mathlas.retrieve.corpus import Document
+    from mathlas.retrieve.hybrid import HybridRetriever
+
+    emb = HashingEmbedder()
+    docs = [
+        Document(doc_id="0", slogan="Banach fixed point contraction complete metric space",
+                 statement="contraction mapping", name="Banach fixed point"),
+        Document(doc_id="1", slogan="etale cohomology of schemes", statement="etale site",
+                 name="etale cohomology"),
+        Document(doc_id="2", slogan="bounded sequence has a convergent subsequence",
+                 statement="Bolzano Weierstrass", name="Bolzano-Weierstrass"),
+    ]
+
+    def write_index(docs):
+        idx = tmp_path / "index_full_dense.npz"
+        sidecar = tmp_path / "index_full_dense.meta.jsonl"
+        M = emb.encode([d.embed_text for d in docs], is_query=False).astype(np.float16)
+        with open(sidecar, "w") as f:
+            for d in docs:
+                f.write(json.dumps({"doc_id": d.doc_id, "name": d.name,
+                                    "slogan": d.slogan, "statement": d.statement,
+                                    "source": d.source, "title": d.title,
+                                    "label": d.label, "citations": d.citations,
+                                    "category": d.category}) + "\n")
+        np.savez(idx, matrix=M, dim=M.shape[1], model="hashing-dev",
+                 embedder="hashing", meta_file=sidecar.name)
+        return str(idx)
+
+    idx = write_index(docs)
+    cache = str(tmp_path / "index_full_dense.bm25")
+
+    # first load BUILDS + SAVES the cache (BM25 on by default).
+    r1 = HybridRetriever.from_index(idx, embedder=HashingEmbedder())
+    assert r1._bm25 is not None and os.path.isdir(cache)
+    assert os.path.exists(os.path.join(cache, "source.json"))
+    base = r1._bm25.search("Banach contraction fixed point", 10)
+    assert base and base[0][0] == 0
+
+    # second load HITS the cache (identical results, same doc count).
+    r2 = HybridRetriever.from_index(idx, embedder=HashingEmbedder())
+    assert r2._bm25.n == len(docs)
+    assert r2._bm25.search("Banach contraction fixed point", 10) == base
+
+    # growing the corpus invalidates the cache -> rebuild to the new doc count.
+    docs2 = docs + [Document(doc_id="3", slogan="compact Hausdorff space",
+                             statement="compactness", name="compact")]
+    r3 = HybridRetriever.from_index(write_index(docs2), embedder=HashingEmbedder())
+    assert r3._bm25.n == len(docs2)
+
+    # dense-only opt-out, and no-cache opt-out (must not write a bundle).
+    assert HybridRetriever.from_index(idx, embedder=HashingEmbedder(),
+                                      with_bm25=False)._bm25 is None
+    eph = str(tmp_path / "ephemeral.npz")
+    np.savez(eph, matrix=emb.encode([d.embed_text for d in docs]).astype(np.float16),
+             dim=emb.dim, model="hashing-dev", embedder="hashing",
+             meta=json.dumps([{"doc_id": d.doc_id, "slogan": d.slogan,
+                               "statement": d.statement, "name": d.name} for d in docs]))
+    HybridRetriever.from_index(eph, embedder=HashingEmbedder(), bm25_cache=None)
+    assert not os.path.exists(str(tmp_path / "ephemeral.bm25"))
+
+
 # --- MCP server surface (tools enumerated, dep-free JSON-RPC dispatch) -------------
 
 
@@ -229,9 +339,10 @@ def test_server_exposes_all_tools():
     from mathlas.server import tool_names
 
     names = tool_names()
-    assert len(names) == 13
+    assert len(names) == 12  # funsearch trio collapsed into one; +search_formal_math
     for required in ("identify_constant", "search_existing_math", "verify_numeric",
-                     "verify_formal", "applicability_checklist", "conjecture_relation"):
+                     "verify_formal", "applicability_checklist", "conjecture_relation",
+                     "funsearch", "search_formal_math"):
         assert required in names
 
 
@@ -242,7 +353,7 @@ def test_server_jsonrpc_dispatch_identify():
     from mathlas.server import _dispatch
 
     listed = _dispatch("tools/list", {})
-    assert len(listed["tools"]) == 13
+    assert len(listed["tools"]) == 12
     res = _dispatch(
         "tools/call",
         {"name": "identify_constant", "arguments": {"value": "1.2020569031595942854"}},
