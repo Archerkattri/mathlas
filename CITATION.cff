@@ -1,0 +1,13 @@
+cff-version: 1.2.0
+message: "If you use mathlas, please cite it as below."
+title: "mathlas: airtight math tools an AI uses over MCP"
+type: software
+authors:
+  - family-names: Attri
+    given-names: Krishi
+    email: krishiattriwork@gmail.com
+repository-code: "https://github.com/Archerkattri/mathlas"
+url: "https://github.com/Archerkattri/mathlas"
+license: PolyForm-Noncommercial-1.0.0
+version: "1.1.1"
+doi: 10.5281/zenodo.20618603

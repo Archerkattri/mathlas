@@ -5,6 +5,7 @@
 # mathlas
 
 [![PyPI](https://img.shields.io/pypi/v/mathlas-mcp)](https://pypi.org/project/mathlas-mcp/)
+[![DOI](https://zenodo.org/badge/1260785845.svg)](https://doi.org/10.5281/zenodo.20618603)
 [![License](https://img.shields.io/badge/license-PolyForm--NC%201.0.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](pyproject.toml)
 
@@ -192,6 +193,6 @@ What no competitor has is everything that happens **after** retrieval:
 
 ## Official MCP registry
 
-mathlas is published as `io.github.archerkattri/mathlas` (see [`docs/REGISTRY_PUBLISH.md`](docs/REGISTRY_PUBLISH.md) and [`server.json`](server.json)).
+mathlas is published as `io.github.Archerkattri/mathlas` (see [`docs/REGISTRY_PUBLISH.md`](docs/REGISTRY_PUBLISH.md) and [`server.json`](server.json)).
 
-mcp-name: io.github.archerkattri/mathlas
+mcp-name: io.github.Archerkattri/mathlas
