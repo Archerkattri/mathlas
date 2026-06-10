@@ -8,6 +8,6 @@ authors:
     email: krishiattriwork@gmail.com
 repository-code: "https://github.com/Archerkattri/mathlas"
 url: "https://github.com/Archerkattri/mathlas"
-license: PolyForm-Noncommercial-1.0.0
-version: "1.1.1"
+license: Apache-2.0
+version: "1.1.2"
 doi: 10.5281/zenodo.20618603

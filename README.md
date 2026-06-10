@@ -6,14 +6,14 @@
 
 [![PyPI](https://img.shields.io/pypi/v/mathlas-mcp)](https://pypi.org/project/mathlas-mcp/)
 [![DOI](https://zenodo.org/badge/1260785845.svg)](https://doi.org/10.5281/zenodo.20618603)
-[![License](https://img.shields.io/badge/license-PolyForm--NC%201.0.0-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](pyproject.toml)
 
 > **An airtight-math tool an AI *uses* — no LLM, no API key, free.** Plug it into
 > Claude Code, Cursor, or any MCP client. The **AI is the brain**; mathlas is the
 > **hands** — it gives the AI the capabilities it lacks and returns *data*
 > (candidates, verdicts, checklists, scaffolds) for the AI to reason over.
-> PolyForm Noncommercial 1.0.0 — noncommercial use only.
+> Apache-2.0. The code is free for any use; published corpus/index artifacts carry their own per-source terms (CC-BY/CC0).
 
 ---
 
