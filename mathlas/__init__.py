@@ -65,7 +65,14 @@ from .webaug import (search_directive, SearchDirective, add_finding,
 from .solve import solve, Solution, AppliedResult
 from .llm import LLM, EchoLLM
 
-__version__ = "1.0.1"
+try:  # single source of truth: the installed package metadata (pyproject)
+    from importlib.metadata import PackageNotFoundError, version as _pkg_version
+    try:
+        __version__ = _pkg_version("mathlas-mcp")
+    except PackageNotFoundError:  # not installed (e.g. raw source tree)
+        __version__ = "1.1.2"
+except ImportError:  # pragma: no cover - importlib.metadata is stdlib >=3.8
+    __version__ = "1.1.2"
 __all__ = [
     # numeric (airtight)
     "identify", "Result", "Candidate",
