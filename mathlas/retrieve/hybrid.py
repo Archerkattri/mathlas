@@ -649,6 +649,10 @@ class HybridRetriever(Retriever):
         explicitly disable an instance default for this call. With both
         resolved to off, this method is byte-identical to the pre-source-aware
         ranking (pinned by tests/test_source_aware.py)."""
+        if mode not in ("hybrid", "dense", "sparse"):
+            raise ValueError(
+                f"unknown retrieve mode {mode!r}; "
+                "expected one of 'hybrid', 'dense', 'sparse'")
         filt = (self.source_filter if source_filter is None
                 else _normalize_source_filter(source_filter))
         weights = (self.source_weights if source_weights is None

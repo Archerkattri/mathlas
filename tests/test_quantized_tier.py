@@ -155,9 +155,10 @@ def test_missing_artifacts_is_honest_error(tmp_path):
 def _embedded_index(tmp_path, n=40):
     """Index whose matrix matches a HashingEmbedder over the slogans, so a
     query embedded at retrieve() time lives in the same space. Each slogan
-    carries TWO distinguishing tokens (dim=256): hash() is randomized per
-    process (PYTHONHASHSEED), and with one token a single bucket collision
-    can make two doc vectors identical -> flaky ties."""
+    carries TWO distinguishing tokens (dim=256). The embedder hash is now
+    DETERMINISTIC, so a given token-bucket collision is now fixed, not flaky;
+    the dense-top-1 assertions below query collision-free indices (7, 14, 4)
+    whose token does not share a bucket+sign with another doc's token."""
     emb = HashingEmbedder(dim=256)
     meta = [{"doc_id": f"d{i}", "slogan": f"unique slogan token{i} alt{i}",
              "statement": f"statement {i}"} for i in range(n)]
@@ -179,8 +180,8 @@ def test_from_index_quantized_end_to_end(tmp_path, kind):
     hits = r.retrieve("unique slogan token7", k=3)
     assert hits and hits[0].meta["doc_id"] == "d7"
     # dense-only mode exercises the quantized channel alone
-    hits = r.retrieve("unique slogan token12", k=3, mode="dense")
-    assert hits[0].meta["doc_id"] == "d12"
+    hits = r.retrieve("unique slogan token14", k=3, mode="dense")
+    assert hits[0].meta["doc_id"] == "d14"
 
 
 def test_from_index_quantized_matches_default_topk(tmp_path):

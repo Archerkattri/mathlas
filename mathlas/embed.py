@@ -25,10 +25,26 @@ References
 """
 from __future__ import annotations
 
+import hashlib
 from abc import ABC, abstractmethod
 from typing import List, Optional, Sequence
 
 import numpy as np
+
+
+def _stable_hash(token: str, salt: str) -> int:
+    """Deterministic, process-independent string hash.
+
+    Python's builtin ``hash()`` on str is salted per process (PYTHONHASHSEED),
+    so the same token maps to different buckets/signs after a restart. A
+    persisted HashingEmbedder index (stored doc vectors built in one process,
+    query vectors in another) would then land documents and queries in
+    different feature spaces, silently breaking retrieval. We hash with
+    ``blake2b`` (stdlib, no new dep) over a fixed salt to get a stable int.
+    """
+    digest = hashlib.blake2b(f"{salt}\x00{token}".encode("utf-8"),
+                             digest_size=8).digest()
+    return int.from_bytes(digest, "big")
 
 
 class Embedder(ABC):
@@ -80,8 +96,8 @@ class HashingEmbedder(Embedder):
         out = np.zeros((len(texts), self.dim), dtype=np.float32)
         for i, t in enumerate(texts):
             for tok in self._toks(t):
-                h = hash((tok, "mathlas-embed")) % self.dim
-                sign = 1.0 if (hash((tok, "sign")) & 1) else -1.0
+                h = _stable_hash(tok, "mathlas-embed") % self.dim
+                sign = 1.0 if (_stable_hash(tok, "sign") & 1) else -1.0
                 out[i, h] += sign
         return _l2norm(out)
 
