@@ -118,13 +118,13 @@ search_existing_math ─▶ mapping_scaffold + applicability_checklist ─▶ (A
 | `search_existing_math(query, k)` | query → ranked results from the **3.68M-doc** dense + BM25 + RRF index |
 | `identify_constant(value)` | a real value → known closed form + provenance (50-digit re-eval) |
 | `verify_numeric(value, closed_form)` | digit-agreement verdict — different engine, higher precision |
-| `verify_formal(statement, lean)` | runs the **real Lean kernel** → typechecks? (else honest UNDETERMINED) |
+| `verify_formal(statement, lean?, proof?)` | runs the **real Lean kernel** — typecheck a snippet, or pass `proof` to **kernel-check a full Lean 4 proof**: `VERIFIED_PROOF` / `REFUTED` (the kernel's exact error, for the repair loop) / honest UNDETERMINED |
 
 **Full toolkit:**
 
 | Tool | What it does |
 |---|---|
-| `search_formal_math(query, backend)` | mathlib declaration names + types via the public **Loogle** (pattern/type) + **LeanSearch** (natural language) services, provenance-labeled; honest "service unavailable" |
+| `search_formal_math(query, backend)` | mathlib declaration names + types via the public **Loogle** (pattern/type) + **LeanSearch** (natural language) services, provenance-labeled; honest "service unavailable" — with a 7-day on-disk cache that serves the last good response when a service is down, clearly labeled `(cached, <age> old)` |
 | `identify_sequence(terms)` | integer sequence → matching OEIS entries (exact term-match) |
 | `applicability_checklist(statement)` | result's hypotheses as an atomic checklist for the AI to mark |
 | `mapping_scaffold(problem, statement)` | needs↔guarantees questions + fill-in template |
@@ -134,6 +134,20 @@ search_existing_math ─▶ mapping_scaffold + applicability_checklist ─▶ (A
 | `add_finding(statement, slogan, source)` | ingest a web-found result into the live corpus |
 
 All tools return data. No tool calls an LLM. `search_formal_math` is the one tool that itself makes a web call (to the public Loogle/LeanSearch services); everything else is fully local.
+
+### Proof checking — the repair loop
+
+`verify_formal` doesn't just typecheck statements: give it a proposition and *your* Lean 4 proof, and the **real kernel** checks the full declaration. mathlas never writes a proof (the generator/verifier split is absolute) — but when your proof is wrong, the kernel tells you *exactly why*, verbatim, in `kernel_error`. That turns proof writing into a tight loop: **the agent writes a proof → mathlas's kernel says exactly what's wrong → the agent repairs and re-calls.**
+
+```jsonc
+verify_formal(statement="∀ n : Nat, n + 0 = n", proof="by\n  intro n\n  rfl")
+// → {"proof_status": "VERIFIED_PROOF", "checked": true, ...}
+verify_formal(statement="2 + 2 = 5", proof="rfl")
+// → {"proof_status": "REFUTED", "kernel_error": "error: Not a definitional equality:
+//     the left-hand side 2 + 2 is not definitionally equal to the right-hand side 5 ...", ...}
+```
+
+No fake passes, by construction: `sorry`/`admit` holes are **REJECTED** (Lean itself exits 0 on a sorried proof — mathlas scans the source *and* the kernel's `sorryAx` diagnostics); a missing toolchain, a timeout (60 s cap), or an import this bare toolchain can't resolve all return an honest `UNDETERMINED`, never a verdict. The whole contract is pinned by `tests/test_proof_check.py` (20 tests against the real Lean 4.30 kernel: correct term *and* tactic-block proofs verified, wrong proofs refuted with the kernel's message, sorried proofs rejected, toolchain-absent honest).
 
 ---
 
@@ -169,7 +183,7 @@ print(identify_sequence([1,1,2,3,5,8,13,21]).matches[1].a_number)  # -> 'A000045
 
 What no competitor has is everything that happens **after** retrieval:
 
-- **Verification tiers** — `verify_numeric` (independent 50-digit re-evaluation) and `verify_formal` (a **real Lean kernel** typecheck, or an honest UNDETERMINED). Retrieval hands you a candidate; mathlas can also *check the claim*.
+- **Verification tiers** — `verify_numeric` (independent 50-digit re-evaluation) and `verify_formal` (a **real Lean kernel** typecheck — including **full proof checking** with the kernel's error returned verbatim for agent repair loops — or an honest UNDETERMINED). Retrieval hands you a candidate; mathlas can also *check the claim* and *check your proof of it*.
 - **`applicability_checklist`** — decomposes a candidate theorem into atomic preconditions the AI verifies one by one, catching misapplications (open vs closed interval, infinite vs finite group). **No competitor has one.**
 - **The self-augmenting `add_finding` loop** — the AI web-finds a missing statement, embeds it, and fuses it into the live index at runtime: **59.1% vs TheoremSearch's 45.0% theorem Hit@20** on their own 110-query benchmark (see above).
 - **Zero-false-positive discipline** — every tier returns an independently-checkable fact or an honest "nothing"; measured false-positive rate is **0 across all tiers** ([`RESULTS.md`](RESULTS.md)).
@@ -180,7 +194,7 @@ What no competitor has is everything that happens **after** retrieval:
 | Informal math retrieval | ✅ 3.68M docs, open | ✅ 9.2M docs (~85% private) | ❌ (mathlib decls only) | ❌ | ❌ |
 | Formal (mathlib) search | ✅ proxies both → one MCP tool | ❌ | ✅ (is exactly this) | ❌ | ❌ |
 | Numeric verification | ✅ airtight 50-digit re-eval | ❌ | ❌ | ⚠️ CAS eval | ⚠️ CAS (no claim-check framing) |
-| Formal verification | ✅ real Lean kernel | ❌ | ❌ (search, not check) | ❌ | ❌ |
+| Formal verification | ✅ real Lean kernel (statements **and full proofs**, repair-loop errors) | ❌ | ❌ (search, not check) | ❌ | ❌ |
 | Applicability checklist | ✅ **unique** | ❌ | ❌ | ❌ | ❌ |
 | Self-augmenting corpus | ✅ `add_finding` (59.1 vs 45.0 Hit@20) | ❌ | ❌ | ❌ | ❌ |
 | Constant/sequence ID | ✅ PSLQ + OEIS + Ramanujan-Machine | ❌ | ❌ | ⚠️ some | ❌ |

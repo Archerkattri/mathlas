@@ -12,7 +12,7 @@ the tool returns *nothing* rather than a plausible guess (the honesty gate). The
 **zero false-positive rate across every tier** below is that discipline holding.
 
 _Last validated: 2026-06-06 (tiers) / 2026-06-09 (retrieval numbers refreshed for
-the 3.68M index). Hardware: single box, CPU tiers; retrieval used 2×GPU for the
+the 3.68M index) / 2026-06-10 (verify_formal proof checking + formal-search cache). Hardware: single box, CPU tiers; retrieval used 2×GPU for the
 offline index build + 1 GPU for the query encoder._
 
 ---
@@ -28,6 +28,7 @@ honest "nothing"). Run: `PYTHONPATH=. python3 benchmarks/{numeric,tier}_bench.py
 | **Numeric** | `identify_constant` | **8/8 (100%)** | **0/3 (0%)** | independent high-precision re-eval (50–51 digits agreed) |
 | **Sequence** | `identify_sequence` | **8/8 (100%)** (all top-1) | **0/3 (0%)** | exact contiguous term-match vs local OEIS (~400k seqs) |
 | **Formal** | `verify_formal` | **7/7 correct verdicts** | — | **real Lean 4.30 kernel** typecheck (4 true accepted, 3 false rejected) |
+| **Formal (proof check)** | `verify_formal(…, proof=)` | **3/3 correct proofs VERIFIED** | **0 fake passes** (wrong proof REFUTED with the kernel's error; `sorry`/`admit` REJECTED) | the **real kernel checks the full declaration** `theorem _mathlas_check : <statement> := <proof>`; toolchain-absent/timeout/missing-import ⇒ honest UNDETERMINED |
 | **Ramanujan** | `conjecture_relation` | **6/6 (100%)** | **0/2 (0%)** | PSLQ + CF, every hit re-verified to ≥25 digits |
 
 Detail:
@@ -40,6 +41,17 @@ Detail:
 - **Formal** — `2+2=4`, `n+0=n`, `¬¬b=b`, `True` typecheck (applies=True); `2+2=5`,
   `(1:Nat)=0`, a type error are **rejected by the kernel** (not "undetermined" — Lean
   actually ran and reported errors).
+- **Formal (proof check)** — `verify_formal` also kernel-checks an **AI-supplied Lean 4
+  proof** of a statement (mathlas never generates proofs — generator/verifier split).
+  Pinned by `tests/test_proof_check.py` (20 tests vs the real Lean 4.30 kernel):
+  correct proofs verified (`rfl` term, a multi-line tactic block, `by decide`);
+  a wrong proof (`2+2=5 := rfl`) **REFUTED with the kernel's error verbatim** in
+  `kernel_error` — the agent's repair-loop payload; `sorry`/`admit` **REJECTED**
+  (crucially: Lean exits 0 on a sorried proof, so the naive exit-code check would
+  fake-pass — mathlas scans source *and* kernel `sorryAx` diagnostics, while a
+  `sorry` inside a comment does *not* trip the scan); empty inputs, no toolchain,
+  a 60 s timeout, and an unresolvable `import` on the bare toolchain all return an
+  honest **UNDETERMINED**, never a verdict. Run: `python -m pytest tests/test_proof_check.py`.
 - **Ramanujan** — φ → simple CF `[1;1,1,…]`, √2 → PSLQ relation + CF `[1;2,2,…]`, e →
   arithmetic CF `[2;1,2,1,1,4,…]`, π / Catalan / ζ(3) → relations/CFs; the two
   structureless constants yield only a bare (pattern-less) simple CF — **no** PSLQ
@@ -282,7 +294,14 @@ CUDA_VISIBLE_DEVICES=0 HF_HUB_CACHE=reference/downloads/hf PYTHONPATH=. \
   provenance is labeled `CONJECTURED_RELATION`; take them to `verify_formal` / a human.
 - `search_formal_math` hits come from the EXTERNAL public Loogle/LeanSearch indexes
   (provenance `external:<service>`), not the mathlas corpus; when a service is down
-  the tool reports it honestly instead of fabricating hits.
+  the tool reports it honestly instead of fabricating hits — and if the same query
+  succeeded within the last 7 days, the cached response is served **clearly labeled**
+  (`cached: true`, age in every hit's provenance: `external:loogle (cached, 3.2h
+  old)`); `available` stays `false` because the live service really was down. Cache:
+  `~/.cache/mathlas/formal_search_cache.json`, 200-entry cap, refreshed on every
+  success, disable with `MATHLAS_NO_CACHE=1`. Pinned by the cache tests in
+  `tests/test_formal_search.py` (hit → simulated 502 → served-from-cache with label;
+  TTL expiry honored; per-query/per-k keys; corrupt cache tolerated).
 - Coverage is the permissive corpus (3.68M docs: the CC-BY/CC0 TheoremSearch subset +
   slogan-embedded Dolma arXiv-math); the full 9.2M arXiv corpus is not
   redistributable, so some literature is simply absent (a data-licensing limit, not a

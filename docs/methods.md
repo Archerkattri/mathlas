@@ -13,7 +13,7 @@ reason over. Concretely, the judgment steps are returned as structure, not opini
 | "what existing result fits?" | `search_existing_math` over its **own** dense+BM25+RRF index |
 | "does it apply to my problem?" | `applicability_checklist` / `mapping_scaffold` return the result's atomic preconditions + needs↔guarantees questions for the AI to mark |
 | "is this numeric claim true?" | `verify_numeric` / `identify_constant` — independent high-precision re-evaluation |
-| "does this Lean statement check?" | `verify_formal` — the real Lean kernel (or an honest UNDETERMINED) |
+| "does this Lean statement check?" / "is my Lean proof correct?" | `verify_formal` — the real Lean kernel, incl. full proof checking (or an honest UNDETERMINED) |
 | "what is this sequence/constant?" | `identify_sequence` (exact OEIS), `conjecture_relation` (PSLQ + Ramanujan-Machine CF) |
 
 ## Architecture
@@ -67,6 +67,16 @@ backends call them.
   pass. Caveat threaded through every verdict: a typecheck proves the snippet is
   well-typed, **not** that the stated theorem is the right applicability claim
   (`typecheck ≠ proves-it-applies`; that mapping is the AI's job).
+  **Proof checking (`check_lean_proof`)**: given a Lean 4 proposition + an
+  AI-written proof, mathlas elaborates `theorem _mathlas_check : <statement> :=
+  <proof>` (leading `import` lines hoisted to the file top, the proof indented
+  uniformly so tactic blocks keep their layout) and kernel-checks the full
+  declaration → `VERIFIED_PROOF` / `REFUTED` (kernel error verbatim — the agent's
+  repair-loop payload) / `UNDETERMINED` (no toolchain, 60 s timeout, or an import
+  the bare toolchain can't resolve). `sorry`/`admit` are **rejected**, both by a
+  comment-stripped source scan and by the kernel's `sorryAx` diagnostics — Lean
+  exits 0 on a sorried proof, so the exit code alone would fake-pass. mathlas
+  never *generates* proofs; the generator/verifier split is absolute.
 
 - **Mapping + verification scaffolds — `map.py`, `verify_apply.py`.**
   `mapping_scaffold` returns the needs↔guarantees structure (problem signature, the
