@@ -365,16 +365,26 @@ def tool_identify_sequence(
 
 
 def tool_search_existing_math(
-    query: str, k: int = 10, corpus_dir: Optional[str] = None, corpus_limit: int = 5000
+    query: str, k: int = 10, corpus_dir: Optional[str] = None,
+    corpus_limit: int = 5000,
+    source_filter: Optional[Dict[str, Any]] = None,
+    source_weights: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
     """Search EXISTING math for candidate results (NO LLM). Wraps HybridRetriever.
 
     Resolution: an explicit ``corpus_dir`` (dataset parquets) wins; else a
     prebuilt index (``MATHLAS_INDEX`` env or the default build location) is
     served if present; else a small built-in seed corpus (zero GPU/downloads).
-    Returns ranked candidates for the calling AI to reason over."""
+    Returns ranked candidates for the calling AI to reason over.
+
+    ``source_filter`` / ``source_weights`` (opt-in, default off — the default
+    ranking is unchanged): down-weight or exclude corpus sources by canonical
+    key (arxiv / dolma / stacks / proofwiki / other). Semantics + score math in
+    ``HybridRetriever`` (mathlas/retrieve/hybrid.py); a bad source key raises
+    ``ValueError`` rather than silently no-opping."""
     retr = _build_retriever(corpus_dir, corpus_limit)
-    cands = retr.retrieve(query, k=int(k))
+    cands = retr.retrieve(query, k=int(k), source_filter=source_filter,
+                          source_weights=source_weights)
     served_index = getattr(retr, "index_path", None)
     if corpus_dir:
         corpus_label = corpus_dir
@@ -1179,7 +1189,9 @@ _TOOLS: List[Dict[str, Any]] = [
             "follow up with applicability_checklist on promising candidates. Args: "
             "query (problem/result description), k (default 10), optional "
             "corpus_dir (dataset parquets; omit to serve the prebuilt index or "
-            "seed corpus)."
+            "seed corpus), optional source_filter / source_weights to "
+            "down-weight or exclude corpus sources, e.g. exclude web-mined "
+            "docs when looking for canonical theorem statements."
         ),
         "params": {
             "query": {
@@ -1194,6 +1206,29 @@ _TOOLS: List[Dict[str, Any]] = [
                 "type": "string",
                 "description": "optional dir of open theorem dataset parquets; omit to "
                 "use the served index / built-in seed corpus",
+            },
+            "source_filter": {
+                "type": "object",
+                "description": "optional hard include/exclude of corpus sources, "
+                "e.g. {\"exclude\": [\"dolma\"]} to drop web-mined docs when "
+                "looking for canonical theorem statements. Keys: 'include' "
+                "and/or 'exclude', values = lists drawn from arxiv / dolma / "
+                "stacks / proofwiki / other. Default off (no behaviour change).",
+                "properties": {
+                    "include": {"type": "array", "items": {"type": "string"}},
+                    "exclude": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+            "source_weights": {
+                "type": "object",
+                "description": "optional per-source score down-weighting, e.g. "
+                "{\"dolma\": 0.5} to soft-demote web-mined docs (weight 0 = "
+                "exclude). Source keys as in source_filter; weights >= 0 "
+                "multiply the fused RRF score. Default off (no behaviour "
+                "change). Note: down-weighting a source hurts queries whose "
+                "true target IS that source — a per-query-intent knob, not a "
+                "global default.",
+                "additionalProperties": {"type": "number"},
             },
         },
         "required": ["query"],

@@ -43,7 +43,7 @@ import numpy as np
 
 from . import Candidate, Retriever
 from .bm25 import BM25Index
-from .corpus import Document, doc_from_meta
+from .corpus import Document, KNOWN_SOURCE_KEYS, doc_from_meta, source_key
 from .rerank import Reranker, doc_rerank_text
 from ..embed import Embedder, HashingEmbedder
 
@@ -58,12 +58,105 @@ def rrf_fuse(rankings: Sequence[Sequence[int]], rrf_k: int = 10) -> dict:
     return fused
 
 
+# --------------------------------------------------------------------- #
+# Source-aware retrieval plumbing (opt-in; the default path is untouched).
+# --------------------------------------------------------------------- #
+def _normalize_source_filter(source_filter) -> Optional[tuple]:
+    """Validate/normalise a ``source_filter`` into ``(include, exclude)``
+    frozensets of canonical source keys, or ``None`` when it is a no-op.
+
+    Accepted form: ``{"include": [...]}, {"exclude": [...]}`` or both (a doc
+    passes iff it is in ``include`` -- when given -- AND not in ``exclude``).
+    Keys must come from :data:`KNOWN_SOURCE_KEYS`; anything else raises
+    ``ValueError`` so a typo ("dolmaa") can never silently no-op."""
+    if not source_filter:
+        return None
+    if not isinstance(source_filter, dict) or \
+            not set(source_filter) <= {"include", "exclude"}:
+        raise ValueError(
+            "source_filter must be a dict with 'include' and/or 'exclude' "
+            f"lists of source keys, got {source_filter!r}")
+    include = frozenset(source_filter.get("include") or ())
+    exclude = frozenset(source_filter.get("exclude") or ())
+    bad = (include | exclude) - set(KNOWN_SOURCE_KEYS)
+    if bad:
+        raise ValueError(
+            f"unknown source key(s) {sorted(bad)}; valid keys: "
+            f"{list(KNOWN_SOURCE_KEYS)}")
+    if not include and not exclude:
+        return None
+    return (include or None, exclude)
+
+
+def _normalize_source_weights(source_weights) -> Optional[dict]:
+    """Validate/normalise ``source_weights`` into ``{key: float}`` with the
+    1.0 (no-op) entries dropped, or ``None`` when nothing remains. Weights must
+    be finite and >= 0; a weight of 0 removes the source entirely (it behaves
+    like an exclude). Unknown keys raise ``ValueError`` (typo safety)."""
+    if not source_weights:
+        return None
+    if not isinstance(source_weights, dict):
+        raise ValueError(
+            f"source_weights must be a dict of source-key -> weight, got "
+            f"{source_weights!r}")
+    bad = set(source_weights) - set(KNOWN_SOURCE_KEYS)
+    if bad:
+        raise ValueError(
+            f"unknown source key(s) {sorted(bad)}; valid keys: "
+            f"{list(KNOWN_SOURCE_KEYS)}")
+    out: dict = {}
+    for key, w in source_weights.items():
+        w = float(w)
+        if not math.isfinite(w) or w < 0.0:
+            raise ValueError(
+                f"source_weights[{key!r}] must be a finite weight >= 0, "
+                f"got {w!r}")
+        if w != 1.0:
+            out[key] = w
+    return out or None
+
+
 class HybridRetriever(Retriever):
     """Dense + BM25 + RRF over a ``Document`` corpus we built ourselves.
 
     ``citation_lambda`` (default 0.0) optionally adds ``lambda*log(max(cites,1))``
     to each fused score before the final top-k cut -- a small, opt-in prior. With
     the default 0.0 the ranking is pure dense+BM25 RRF (no regression risk).
+
+    SOURCE-AWARE RETRIEVAL (opt-in; both default to off => byte-identical
+    ranking, pinned by tests/test_source_aware.py). Motivated by the measured
+    index-growth regression (RESULTS.md §3b, 2026-06-10): adding 2.34M
+    web-mined Dolma docs to the served 3.68M index crowded the canonical
+    targets out of the paper-level top-20 on the TheoremSearch-110
+    (corpus-only 13.6% -> 11.8%). Two knobs, settable per-instance here (and
+    in ``from_index``) or per-call in :meth:`retrieve`:
+
+    ``source_filter={"include": [...], "exclude": [...]}``
+        Hard include/exclude of canonical source keys
+        (:data:`KNOWN_SOURCE_KEYS`: arxiv / dolma / stacks / proofwiki /
+        other -- derived from each doc's provenance by
+        :func:`mathlas.retrieve.corpus.source_key`). Applied IN-CHANNEL,
+        before RRF: on the exact dense path the disallowed rows are masked
+        out of the similarity argsort (exactly equivalent to retrieving over
+        the filtered corpus); BM25 / quantized / faiss channel lists are
+        over-fetched (``5*depth + 100``) then filtered, so the channel depth
+        is preserved (approximation: a doc beyond the over-fetched head of a
+        non-maskable channel stays unreachable; honest and documented).
+
+    ``source_weights={"dolma": 0.5, ...}``
+        Per-source multiplicative weight on the FUSED RRF score::
+
+            score(d) = w_src(d) * sum_c 1/(rrf_k + rank_c(d))
+
+        Because the weight multiplies the *sum* over channels, this is
+        identical to scaling every channel's reciprocal-rank contribution --
+        the formulation that composes cleanly with the rrf_k=10 fusion AND
+        with the dual-channel max-sim path (max-sim happens inside the dense
+        ranking, upstream of the weight). A weight of 0 drops the source from
+        the fused pool entirely. Honesty note: a weight in (0, 1) re-orders
+        the fused candidate pool but cannot resurrect a doc that never entered
+        any channel's top-``channel_depth``; use ``source_filter`` (or weight
+        0) when a source should genuinely not compete for channel slots.
     """
 
     #: Set when the retriever was built from a prebuilt index (``from_index`` /
@@ -81,7 +174,9 @@ class HybridRetriever(Retriever):
                  _prebuilt_bm25: Optional[BM25Index] = None,
                  statement_matrix: Optional[np.ndarray] = None,
                  reranker: Optional[Reranker] = None,
-                 rerank_depth: int = 100) -> None:
+                 rerank_depth: int = 100,
+                 source_filter: Optional[dict] = None,
+                 source_weights: Optional[dict] = None) -> None:
         self.docs: List[Document] = list(documents)
         self.embedder = embedder or HashingEmbedder()
         self.rrf_k = int(rrf_k)
@@ -89,6 +184,11 @@ class HybridRetriever(Retriever):
         self.citation_lambda = float(citation_lambda)
         self.reranker = reranker
         self.rerank_depth = int(rerank_depth)
+        # instance-default source knobs (see class docstring); validated now so
+        # a bad config fails at construction, not on the first query.
+        self.source_filter = _normalize_source_filter(source_filter)
+        self.source_weights = _normalize_source_weights(source_weights)
+        self._source_codes_cache: Optional[np.ndarray] = None  # lazy int8/doc
 
         # OPT-IN second dense channel: the same docs embedded by their CLEANED
         # STATEMENT text (vs the default slogan channel). Attacks the
@@ -162,7 +262,9 @@ class HybridRetriever(Retriever):
                    reranker: Optional[Reranker] = None,
                    rerank_depth: int = 100,
                    quantized: Optional[str] = None,
-                   quantized_shortlist: int = 1000) -> "HybridRetriever":
+                   quantized_shortlist: int = 1000,
+                   source_filter: Optional[dict] = None,
+                   source_weights: Optional[dict] = None) -> "HybridRetriever":
         """Build a retriever from a prebuilt ``index.npz``.
 
         The npz (written by ``scripts/build_index_mp.py finalize``) holds
@@ -212,6 +314,10 @@ class HybridRetriever(Retriever):
         docs/QUANTIZED_TIER.md. Queries must STILL be embedded by the index's
         own model (see retrieve/quantized.py honesty note). Incompatible with
         ``statement_index`` (the statement channel stays fp32-resident).
+
+        ``source_filter`` / ``source_weights`` (opt-in, default off) become the
+        served retriever's instance defaults — see the class docstring for the
+        semantics and the score math.
         """
         data = np.load(path, allow_pickle=True)
         quant = None
@@ -271,7 +377,8 @@ class HybridRetriever(Retriever):
                    channel_depth=channel_depth, citation_lambda=citation_lambda,
                    _precomputed_emb=matrix, _quant_index=quant, build_bm25=False,
                    _prebuilt_bm25=bm25, statement_matrix=stmt_matrix,
-                   reranker=reranker, rerank_depth=rerank_depth)
+                   reranker=reranker, rerank_depth=rerank_depth,
+                   source_filter=source_filter, source_weights=source_weights)
         # surface a couple of index facts for introspection / logging.
         n_dim = quant.dim if quant is not None else matrix.shape[1]
         retr.index_path = os.fspath(path)
@@ -403,25 +510,89 @@ class HybridRetriever(Retriever):
                 f"model the index was built with.")
         return retr
 
-    def _dense_rank(self, query: str, k: int) -> List[int]:
+    # ------------------------------------------------------------------ #
+    # Source-aware helpers (lazy; nothing is computed until a filter/weight
+    # is actually used, so the default path costs zero extra work).
+    # ------------------------------------------------------------------ #
+    def _source_codes(self) -> np.ndarray:
+        """Per-doc canonical-source code (int8 index into KNOWN_SOURCE_KEYS),
+        derived once from doc provenance and cached."""
+        if self._source_codes_cache is None:
+            code = {k: i for i, k in enumerate(KNOWN_SOURCE_KEYS)}
+            self._source_codes_cache = np.fromiter(
+                (code[source_key(d.doc_id, d.source)] for d in self.docs),
+                dtype=np.int8, count=len(self.docs))
+        return self._source_codes_cache
+
+    def _allowed_mask(self, filt: Optional[tuple]) -> Optional[np.ndarray]:
+        """Boolean allow-mask over doc rows for a normalised filter, or ``None``."""
+        if filt is None:
+            return None
+        include, exclude = filt
+        codes = self._source_codes()
+        code = {k: i for i, k in enumerate(KNOWN_SOURCE_KEYS)}
+        if include is not None:
+            mask = np.isin(codes, [code[k] for k in include])
+        else:
+            mask = np.ones(len(self.docs), dtype=bool)
+        if exclude:
+            mask &= ~np.isin(codes, [code[k] for k in exclude])
+        return mask
+
+    @staticmethod
+    def _overfetch(depth: int) -> int:
+        """Channel fetch depth when a filter must be applied post-hoc to a
+        channel we cannot mask in place (BM25 / quantized / faiss): fetch
+        deeper, filter, truncate back to ``depth``. 5x+100 covers an excluded
+        source that dominates ~2/3 of the corpus (dolma = 64% of the served
+        3.68M index) with room to spare."""
+        return 5 * depth + 100
+
+    def _dense_rank(self, query: str, k: int,
+                    allowed_mask: Optional[np.ndarray] = None) -> List[int]:
         if not self.docs:
             return []
         q = self.embedder.encode([query], is_query=True)[0].astype(np.float32)
         if self._quant is not None:               # quantized memmap path (laptop tier)
             n = float(np.linalg.norm(q))
-            return self._quant.search(q / n if n > 0 else q, k)
+            qd = q / n if n > 0 else q
+            if allowed_mask is None:
+                return self._quant.search(qd, k)
+            got = self._quant.search(qd, min(len(self.docs), self._overfetch(k)))
+            return [i for i in got if allowed_mask[i]][:k]
         if self._faiss is not None:               # ANN path (10M+ scale)
             import faiss
             qn = np.ascontiguousarray(q[None, :])
             faiss.normalize_L2(qn)                 # inner product == cosine on unit vectors
-            _, idx = self._faiss.search(qn, k)
-            return [int(i) for i in idx[0] if i >= 0]
+            fetch = k if allowed_mask is None else min(len(self.docs),
+                                                       self._overfetch(k))
+            _, idx = self._faiss.search(qn, fetch)
+            got = [int(i) for i in idx[0] if i >= 0]
+            if allowed_mask is None:
+                return got
+            return [i for i in got if allowed_mask[i]][:k]
         sims = self._emb @ q                      # rows are unit-norm -> cosine
         if self._stmt_emb is not None:
             # dual-channel max-sim: each doc scores by its best representation
             # (slogan or cleaned statement); see __init__ for the measurement.
             sims = np.maximum(sims, self._stmt_emb @ q)
+        if allowed_mask is not None:
+            # exact in-channel filter: disallowed rows can never take a slot,
+            # so this equals retrieving over the filtered corpus.
+            sims = np.where(allowed_mask, sims, -np.inf)
+            order = np.argsort(-sims)[:k]
+            return [int(i) for i in order if np.isfinite(sims[i])]
         return [int(i) for i in np.argsort(-sims)[:k]]
+
+    def _sparse_rank(self, query: str, depth: int,
+                     allowed_mask: Optional[np.ndarray] = None) -> List[int]:
+        if self._bm25 is None:
+            return []
+        if allowed_mask is None:
+            return [i for i, _ in self._bm25.search(query, depth)]
+        got = self._bm25.search(query, min(len(self.docs),
+                                           self._overfetch(depth)))
+        return [i for i, _ in got if allowed_mask[i]][:depth]
 
     def _maybe_rerank(self, query: str, ranked: List[int]) -> List[int]:
         """Cross-encoder rerank of the top ``rerank_depth`` fused candidates,
@@ -459,7 +630,9 @@ class HybridRetriever(Retriever):
         return head_out + tail
 
     def retrieve(self, query: str, k: int = 10, mode: str = "hybrid",
-                 rerank: Optional[bool] = None) -> List[Candidate]:
+                 rerank: Optional[bool] = None,
+                 source_filter: Optional[dict] = None,
+                 source_weights: Optional[dict] = None) -> List[Candidate]:
         """``mode``: ``hybrid`` (dense+BM25+RRF, the default and production path),
         or ``dense``/``sparse`` for single-channel ablation. Single-channel modes
         rank by that channel's RRF-shaped score so the top-k cut is comparable.
@@ -468,17 +641,44 @@ class HybridRetriever(Retriever):
 
         ``rerank``: ``True`` -> cross-encoder rerank of the top ``rerank_depth``
         fused candidates (requires an injected ``reranker``); ``None`` (default)
-        -> rerank exactly when a reranker was injected; ``False`` -> never."""
+        -> rerank exactly when a reranker was injected; ``False`` -> never.
+
+        ``source_filter`` / ``source_weights``: per-call source-aware knobs
+        (semantics + math in the class docstring). ``None`` (default) falls
+        back to the instance defaults set at construction; pass ``{}`` to
+        explicitly disable an instance default for this call. With both
+        resolved to off, this method is byte-identical to the pre-source-aware
+        ranking (pinned by tests/test_source_aware.py)."""
+        filt = (self.source_filter if source_filter is None
+                else _normalize_source_filter(source_filter))
+        weights = (self.source_weights if source_weights is None
+                   else _normalize_source_weights(source_weights))
+        mask = self._allowed_mask(filt)
         depth = max(k, self.channel_depth)
-        dense = self._dense_rank(query, depth) if mode in ("hybrid", "dense") else []
-        sparse = ([i for i, _ in self._bm25.search(query, depth)]
-                  if (mode in ("hybrid", "sparse") and self._bm25 is not None) else [])
+        dense = (self._dense_rank(query, depth, allowed_mask=mask)
+                 if mode in ("hybrid", "dense") else [])
+        sparse = (self._sparse_rank(query, depth, allowed_mask=mask)
+                  if mode in ("hybrid", "sparse") else [])
         if mode == "dense":
             fused = {d: 1.0 / (self.rrf_k + r + 1) for r, d in enumerate(dense)}
         elif mode == "sparse":
             fused = {d: 1.0 / (self.rrf_k + r + 1) for r, d in enumerate(sparse)}
         else:
             fused = rrf_fuse([dense, sparse], rrf_k=self.rrf_k)
+        if weights:
+            # score(d) = w_src(d) * sum_c 1/(rrf_k + rank_c(d)); w=0 drops the
+            # doc. Applied before the (also opt-in) citation prior so a
+            # down-weighted source cannot buy its way back via citations.
+            codes = self._source_codes()
+            wvec = np.ones(len(KNOWN_SOURCE_KEYS), dtype=np.float64)
+            for key, w in weights.items():
+                wvec[KNOWN_SOURCE_KEYS.index(key)] = w
+            for doc_id in list(fused):
+                w = wvec[codes[doc_id]]
+                if w <= 0.0:
+                    del fused[doc_id]
+                else:
+                    fused[doc_id] *= w
         if self.citation_lambda > 0.0:
             lam = self.citation_lambda
             for doc_id in fused:

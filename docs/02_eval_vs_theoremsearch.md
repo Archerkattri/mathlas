@@ -57,6 +57,58 @@ distractors that **crowd 2 of the 15 reachable papers out of the top-20**
 dense-only is unchanged at 86.7%. The trade is more coverage for slightly more
 crowding on this small reachable subset; both runs are reported.
 
+## Source-aware retrieval (opt-in) — the full matrix
+
+Measured **2026-06-10 on the served 3,683,428-doc index, CPU-only** (the index is
+served with the binary sidecar so the 30 GB matrix stays on disk; the 110 dense
+ranks come from one exact streamed fp32 pass over the matrix — the same
+renormalised-fp32 math `from_index` serves). Harness:
+`scripts/eval_source_weights.py` (stages `codes` → `selfrecall` → `dense110` →
+`eval110`; query vectors cached once by `scripts/embed_webaug110_queries.py`).
+Logs: `logs/eval_sw_codes.log`, `logs/eval_sw_dense110.log`. Raw numbers:
+`reference/downloads/retrieval_upgrades/source_weights_results.json`.
+
+`search_existing_math` takes optional `source_filter` / `source_weights` over the
+canonical source keys (arxiv / dolma / stacks / proofwiki / other — the served
+index is 1.30M arxiv + 2.34M dolma + 12.7k stacks + 23.9k proofwiki + 2.4k other).
+**Both default off; the default-off row below reproduced the measured 10.0 / 11.8%
+baseline exactly** (the eval asserts it, and `tests/test_source_aware.py` pins the
+default ranking byte-identical — order *and* scores).
+
+**What down-weighting/excluding dolma buys on the 110 human queries (Hit@20):**
+
+| dolma knob | full-110 theorem | full-110 paper | reachable-15 theorem | reachable-15 paper |
+|---|---|---|---|---|
+| off (default) | 11/110 = 10.0% | 13/110 = 11.8% | 11/15 = 73.3% | 13/15 = 86.7% |
+| weight 0.5 | 13/110 = 11.8% | 14/110 = 12.7% | 13/15 = 86.7% | 14/15 = 93.3% |
+| weight 0.25 | 13/110 = 11.8% | 14/110 = 12.7% | 13/15 = 86.7% | 14/15 = 93.3% |
+| weight 0 | 13/110 = 11.8% | 14/110 = 12.7% | 13/15 = 86.7% | 14/15 = 93.3% |
+| **exclude** | **13/110 = 11.8%** | **15/110 = 13.6%** | **13/15 = 86.7%** | **15/15 = 100.0%** |
+
+`exclude` **fully recovers the pre-growth (1.34M-index) paper-level 13.6% and the
+15/15 = 100% reachable row**, with theorem-level *above* the old index (11.8% vs
+10.9%): any soft down-weight already restores 2 of the crowded-out targets; the
+hard in-channel exclude (dolma never takes a channel slot) restores the last
+paper-level miss. Same small-sample caveat as the rest of this page — on the
+reachable subset 1 query = 6.7 pts.
+
+**What it costs — why it ships opt-in, default off.** On the n=3000 body→slogan
+self-recall, ~65% of targets (1942/3000) ARE Dolma docs; down-weighting dolma is
+catastrophic exactly for those queries:
+
+| dolma knob | all R@10 | dolma-target R@10 (n=1942) | non-dolma-target R@10 (n=1058) |
+|---|---|---|---|
+| off (default) | 0.999 | 0.999 | 1.000 |
+| weight 0.5 | 0.925 | 0.884 | 1.000 |
+| weight 0.25 | 0.709 | 0.551 | 1.000 |
+| weight 0 / exclude | 0.353 | 0.000 | 1.000 |
+
+So this is a **per-query-intent knob, not a global default**: an AI excludes/demotes
+dolma when it wants canonical theorem statements (the TheoremSearch-110 regime) and
+leaves the knobs off when the web-mined corpus is part of the answer space.
+Semantics + score math (`score(d) = w_src(d) · Σ_c 1/(rrf_k + rank_c(d))`; filters
+applied in-channel so depth is preserved): `mathlas/retrieve/hybrid.py`.
+
 ## Full comparison (every baseline TheoremSearch reported)
 
 TheoremSearch benchmarked against four external systems on this same 110-query test

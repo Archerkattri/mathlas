@@ -106,6 +106,8 @@ On TheoremSearch's own **110 human-written queries**, baseline mathlas hits a co
 
 The 10.0% floor exists *because* TheoremSearch withheld 85% of their corpus — the loop repairs that coverage gap. Reproduce with `benchmarks/webaug_110_bench.py` (use the **full** 82-finding worklist `_findings_worklist_full.json`).
 
+**Source-aware retrieval (opt-in).** Growing the index 1.34M → 3.68M had a measured cost: the 2.34M web-mined Dolma docs crowd canonical papers out of the top-20 (corpus-only paper-level 13.6% → 11.8% on these same 110 queries). `search_existing_math` now takes optional `source_filter` / `source_weights` — e.g. `source_filter={"exclude": ["dolma"]}` when you want canonical theorem statements only — and excluding dolma **fully recovers the pre-growth 13.6%** paper-level (15/110; reachable-15 paper 15/15 = 100%) with theorem-level *above* the old index (11.8% vs 10.9%). The default ranking stays byte-identical (test-pinned). It is a **per-query-intent knob, not a free win**: on the n=3000 self-recall, 65% of whose targets ARE Dolma docs, down-weighting dolma is catastrophic for those queries (dolma-target R@10 0.999 → 0.884 at weight 0.5, → 0 when excluded) — exactly why it ships opt-in, default off. Full matrix: [`docs/02_eval_vs_theoremsearch.md`](docs/02_eval_vs_theoremsearch.md).
+
 ---
 
 ## The 12 tools

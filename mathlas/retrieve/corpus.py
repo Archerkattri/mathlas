@@ -103,6 +103,37 @@ def _coerce_category(v) -> Optional[str]:
     return s
 
 
+#: Canonical corpus-source keys (the vocabulary ``source_filter`` /
+#: ``source_weights`` accept). Derived from each doc's provenance, NOT stored:
+#: the served meta's ``source`` field is a URL/identifier string —
+#: ``https://arxiv.org/abs/...`` for the TheoremSearch base, ``https://stacks.
+#: math.columbia.edu/tag/...`` for Stacks, a ProofWiki URL, and the literal
+#: ``"arXiv (dolma-v1_7)"`` (plus a ``dolma:`` doc_id prefix) for the web-mined
+#: Dolma docs. Everything else (textbook PDFs etc.) is ``other``.
+KNOWN_SOURCE_KEYS = ("arxiv", "dolma", "stacks", "proofwiki", "other")
+
+
+def source_key(doc_id: Optional[str], source: Optional[str]) -> str:
+    """Map a document's provenance to one of :data:`KNOWN_SOURCE_KEYS`.
+
+    Order matters: the Dolma docs' ``source`` string *contains* "arXiv"
+    ("arXiv (dolma-v1_7)"), so dolma is tested before arxiv. The ``dolma:``
+    doc_id prefix is the strongest signal (every Dolma row carries it).
+    """
+    if (doc_id or "").startswith("dolma:"):
+        return "dolma"
+    s = (source or "").lower()
+    if "dolma" in s:
+        return "dolma"
+    if "stacks.math" in s:
+        return "stacks"
+    if "proofwiki" in s:
+        return "proofwiki"
+    if "arxiv" in s:
+        return "arxiv"
+    return "other"
+
+
 @dataclass(frozen=True)
 class Document:
     """One corpus entry: an existing result, with its NL denotation + source."""

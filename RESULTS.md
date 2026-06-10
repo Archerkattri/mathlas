@@ -269,6 +269,27 @@ retrieval is therefore **on-par** with the SOTA open tool — the differentiatio
 *system* (open, MCP-native, + the verification/conjecture tiers above), not a
 retrieval-quality leap.
 
+**Source-aware retrieval (opt-in) — buying the crowding back per query.** Measured
+2026-06-10 on the served 3.68M index, CPU-only (binary sidecar; the 110 dense ranks
+from one exact streamed fp32 pass; `scripts/eval_source_weights.py`, logs
+`logs/eval_sw_dense110.log` / `logs/eval_sw_codes.log`). `search_existing_math` now
+takes `source_filter` / `source_weights` (canonical keys arxiv / dolma / stacks /
+proofwiki / other); **default off, and default-off reproduced the 10.0 / 11.8%
+baseline exactly** (also pinned byte-identical by `tests/test_source_aware.py`).
+
+| dolma knob | full-110 thm | full-110 paper | reachable-15 thm | reachable-15 paper |
+|---|---|---|---|---|
+| off (default) | 10.0% | 11.8% | 73.3% | 86.7% |
+| weight 0.5 / 0.25 / 0 | 11.8% | 12.7% | 86.7% | 93.3% |
+| **exclude** | **11.8%** | **13.6%** | **86.7%** | **100.0%** |
+
+Excluding dolma **fully recovers the pre-growth paper-level 13.6% (and 15/15
+reachable)** with theorem-level *above* the old 1.34M index (11.8% vs 10.9%). It is
+a **per-query-intent knob, not a free win**: on the n=3000 self-recall (whose targets
+are ~65% Dolma docs) dolma-target R@10 collapses 0.999 → 0.884 at weight 0.5 and
+→ 0 at exclude — hence opt-in, default off. Same n=15 small-sample caveat as above.
+Full matrix: [`docs/02_eval_vs_theoremsearch.md`](docs/02_eval_vs_theoremsearch.md).
+
 (The large-n self-recalls — §3a0 at the current 3.68M scale (body→slogan R@1 0.614 /
 R@10 0.832) and §3a at the earlier 1.635M build — are the tight complement to this
 small-n=15 external comparison: they measure cross-representation matching over the
