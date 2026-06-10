@@ -44,6 +44,13 @@ a tiny built-in seed corpus (zero GPU/downloads). Two env vars override:
                         (wins over ``MATHLAS_INDEX``). Accepts 1/true/yes/on.
   * ``MATHLAS_INDEX=/path/index.npz``  serve this specific prebuilt index
                         (errors if missing). Ignored when ``MATHLAS_SEED`` is set.
+  * ``MATHLAS_QUANTIZED=int8|binary``  serve the dense channel from the memmapped
+                        quantized sidecars (the laptop tier; docs/QUANTIZED_TIER.md).
+  * ``MATHLAS_STATEMENT_INDEX=/path/index_full_statement.npz`` (or ``auto``)
+                        opt-in second dense channel: the corpus embedded by its
+                        cleaned statement text, folded in by per-doc max-sim.
+                        Roughly doubles resident RAM; never auto-detected.
+  * ``MATHLAS_RERANK=1``  opt-in Qwen3-Reranker-0.6B cross-encoder blend stage.
 
 Implementation: uses the official ``mcp`` Python SDK (FastMCP) if installed;
 otherwise falls back to a dependency-free stdio JSON-RPC MCP server implementing
@@ -253,9 +260,41 @@ def _build_retriever(corpus_dir: Optional[str], limit: int):
         if quantized not in (None, "int8", "binary"):
             raise ValueError(
                 f"MATHLAS_QUANTIZED must be 'int8' or 'binary', got {quantized!r}")
+        # MATHLAS_STATEMENT_INDEX -> opt-in SECOND dense channel (the corpus
+        # embedded by its cleaned STATEMENT text, built by
+        # scripts/build_statement_channel.py), folded into the dense ranking by
+        # per-doc max-sim (HybridRetriever._dense_rank). Measured on the full
+        # 3.68M index it lifts self-recall R@1 0.614 -> 0.965 (n=3000; see
+        # docs/RETRIEVAL_UPGRADE_NOTES.md). DELIBERATELY opt-in, never
+        # auto-detected: the second matrix roughly DOUBLES resident RAM
+        # (~57 GB -> ~115 GB fp32 for the full index), so merely having the
+        # file on disk must not change the server's memory footprint. Value =
+        # a path, or "auto" to use index_full_statement.npz beside the index.
+        stmt_index = os.environ.get("MATHLAS_STATEMENT_INDEX", "").strip() or None
+        if stmt_index is not None:
+            if stmt_index.lower() == "auto":
+                stmt_index = os.path.join(os.path.dirname(index_path),
+                                          "index_full_statement.npz")
+            if not os.path.exists(stmt_index):
+                raise FileNotFoundError(
+                    f"MATHLAS_STATEMENT_INDEX={stmt_index} does not exist "
+                    "(build it with scripts/build_statement_channel.py, or "
+                    "unset the variable)")
+        # MATHLAS_RERANK=1 -> opt-in Qwen3-Reranker-0.6B cross-encoder stage
+        # (RRF-blended with the first-stage order, see HybridRetriever.
+        # _maybe_rerank; honest stderr fallback to the un-reranked fusion when
+        # torch/weights are unavailable). Adds a 0.6B model load + ~1-2 s/query
+        # on GPU, so it stays env-gated.
+        reranker = None
+        if os.environ.get("MATHLAS_RERANK", "").strip().lower() in {
+                "1", "true", "yes", "on"}:
+            from .retrieve.rerank import Qwen3Reranker
+            reranker = Qwen3Reranker()
         retr = HybridRetriever.from_index(
             index_path, embedder=_embedder_for_index(index_path),
             quantized=quantized,
+            statement_index=stmt_index,
+            reranker=reranker,
         )
         _RETRIEVER_CACHE[key] = retr
         return retr

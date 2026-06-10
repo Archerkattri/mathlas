@@ -109,6 +109,32 @@ leaves the knobs off when the web-mined corpus is part of the answer space.
 Semantics + score math (`score(d) = w_src(d) · Σ_c 1/(rrf_k + rank_c(d))`; filters
 applied in-channel so depth is preserved): `mathlas/retrieve/hybrid.py`.
 
+## Dual-channel dense (the v1.2 statement channel) on the same 110 queries
+
+Measured 2026-06-10, same harness, with the dense channel replaced by the
+shipped dual-channel max-sim ranking (slogan matrix + the new statement matrix;
+`scripts/eval_source_weights.py dense110 --dual` then `eval110 --dual`; log
+`logs/eval110_dual.log`). The open question was whether the statement channel
+is "the structural fix" that recovers the index-growth regression without the
+source knob. Answer, honestly: **partial**.
+
+| config (Hit@20) | full-110 thm | full-110 paper | reachable-15 thm | reachable-15 paper |
+|---|---|---|---|---|
+| single channel, default | 10.0% | 11.8% | 73.3% | 86.7% |
+| **dual channel, default** | **10.9%** | **12.7%** | **80.0%** | **93.3%** |
+| single channel + exclude dolma | 11.8% | **13.6%** | 86.7% | **100.0%** |
+| dual channel + exclude dolma (or any weight) | 11.8% | 12.7% | 86.7% | 93.3% |
+
+The dual channel structurally recovers one of the two crowded-out papers and
+one theorem at default settings (no knob), but it does **not** recover the full
+pre-growth paper-level 13.6% (15/110) on its own, and combining it with the
+dolma knobs is not additive here (the dual ranking tops out at 14/15 reachable
+paper-level where single + exclude reaches 15/15). On this benchmark the
+source-aware exclude on the single channel remains the full mitigation; the
+dual channel's decisive win is the full-corpus statement-shaped self-recall
+(R@1 0.614 -> 0.965; `docs/RETRIEVAL_UPGRADE_NOTES.md`). Same n=15 caveat:
+every delta in this table is 1-2 queries.
+
 ## Full comparison (every baseline TheoremSearch reported)
 
 TheoremSearch benchmarked against four external systems on this same 110-query test

@@ -114,57 +114,90 @@ the statement channel into the DENSE ranking by per-doc max-sim
 the design point is that a statement-shaped query gets a channel in its own
 surface form while prose queries keep the slogan channel.)
 
-## Status / what is still running
+## Status: COMPLETE (2026-06-10, shipped in v1.2.0)
 
-* **Statement-channel embed is still running on GPU1** (resumable;
-  `logs/stmt_channel_embed2.log`; ~52-62 docs/s ≈ 17-19 h total for 3.68M).
-  Relaunch after any interruption with:
-  ```
-  CUDA_VISIBLE_DEVICES=1 OMP_NUM_THREADS=2 HF_HUB_CACHE=reference/downloads/hf \
-    PYTHONPATH=. python3 scripts/build_statement_channel.py embed \
-      --workdir reference/downloads/statement_channel
-  ```
-  then `finalize --out reference/downloads/index_full_statement.npz`.
-* Once `index_full_statement.npz` exists,
-  `python3 scripts/eval_retrieval_upgrades.py final` automatically runs the
-  FULL-corpus dual-channel eval on the n=3000 baseline sample and prints the
-  headline table (everything else is already cached).
+* The statement-channel embed finished (921 shards, 3,683,428 rows,
+  `logs/stmt_channel_embed2.log`); `finalize` wrote
+  `reference/downloads/index_full_statement.npz` (3,683,428 x 4096 fp16,
+  30.2 GB), row count verified equal to the served meta and every shard
+  verified contiguous and row-aligned before finalize.
+* `scripts/eval_retrieval_upgrades.py final` ran the FULL-corpus dual-channel
+  eval on the n=3000 baseline sample; numbers in the headline section below.
+* The TheoremSearch-110 regression-recovery check ran via
+  `scripts/eval_source_weights.py dense110 --dual` + `eval110 --dual`
+  (the dual ranks reproduce the shipped max-sim math exactly): dual-channel
+  default recovers PART of the index-growth regression (paper 11.8% -> 12.7%,
+  theorem 10.0% -> 10.9%) but NOT the full pre-growth 13.6%; the source-aware
+  exclude knob remains the full mitigation on that benchmark. Full table:
+  `docs/02_eval_vs_theoremsearch.md`.
 
 ## Headline (current best, honest accounting)
 
-* vs the 0.614 / 0.832 dense baseline (n=3000, full index): production hybrid
-  (dense+BM25, new rrf_k=10) = **0.771 / 0.999** (carries the proxy's
-  exact-text advantage on the BM25 side).
+Full-corpus dual-channel numbers measured 2026-06-10 on the SAME cached n=3000
+baseline sample as the 0.614 / 0.832 headline
+(`scripts/eval_retrieval_upgrades.py final`, log `logs/eval_upgrades_final.log`):
+
+| config (n=3000, full 3.68M index) | R@1 | R@10 | MRR |
+|---|---|---|---|
+| dense slogan channel (baseline) | 0.614 | 0.832 | 0.698 |
+| production hybrid (dense+BM25, rrf_k=10) | 0.771 | 0.999 | 0.869 |
+| **FULL dual-channel max-sim (dense only)** | **0.965** | **0.999** | **0.982** |
+| FULL dual-dense + BM25, rrf_k=10 | 0.966 | 1.000 | 0.982 |
+
+* **Dual channel: R@1 0.614 -> 0.965 on the full corpus** (the 200k-prefix
+  mechanism check predicted 0.833 -> 0.981 on its easier subset; the full-scale
+  measurement confirms the mechanism at 3.68M). Caveat, stated plainly: this is
+  the self-retrieval proxy, and the statement channel indexes the very text the
+  queries are drawn from, so like BM25 it carries an exact-text advantage here.
+  The design claim it validates is narrower and real: a statement-shaped query
+  now has a dense channel in its own surface form instead of relying on the
+  slogan representation. The no-leak external check is the TheoremSearch-110
+  human-query bench above (a real but partial lift).
 * Honest cross-representation lift with no leak: shipped rerank blend over
   dense = **+1.7pp R@1 / +3.9pp R@10** (n=1000).
-* Dual-channel max-sim on the 200k prefix: slogan-only 0.833 → **0.981 R@1**;
-  full-corpus number pending the embed.
 
-## Server wiring (for the owner of `mathlas/server.py` — not applied here)
+## Server wiring (APPLIED in v1.2.0, `mathlas/server.py`)
 
-`_get_retriever()` currently does
-`HybridRetriever.from_index(index_path, embedder=_embedder_for_index(index_path))`.
-To pick up the upgrades:
+Both upgrades are now served, strictly opt-in via env vars (default behaviour
+byte-identical to v1.1.2):
 
-```python
-# inside _get_retriever(), replacing the from_index call:
-stmt_path = os.environ.get("MATHLAS_STATEMENT_INDEX")  # opt-in 2nd dense channel
-if stmt_path is None:
-    cand = os.path.join(os.path.dirname(index_path), "index_full_statement.npz")
-    stmt_path = cand if os.path.exists(cand) else None
-reranker = None
-if os.environ.get("MATHLAS_RERANK", "").strip().lower() in {"1", "true", "yes", "on"}:
-    from .retrieve.rerank import Qwen3Reranker
-    reranker = Qwen3Reranker()        # lazy; honest stderr fallback if no torch
-retr = HybridRetriever.from_index(
-    index_path,
-    embedder=_embedder_for_index(index_path),
-    statement_index=stmt_path,        # None -> exactly today's behaviour
-    reranker=reranker,                # None -> no rerank stage
-)
+```bash
+# second dense channel (statement matrix folded in by per-doc max-sim);
+# value = a path, or "auto" for index_full_statement.npz beside the index
+MATHLAS_STATEMENT_INDEX=/path/index_full_statement.npz python -m mathlas.server
+
+# cross-encoder rerank blend stage (Qwen3-Reranker-0.6B)
+MATHLAS_RERANK=1 python -m mathlas.server
 ```
 
-Notes for the server owner: `rrf_k=10` is now the constructor default (no
-wiring needed); the statement matrix adds ~30GB fp16 → ~60GB fp32 resident
-(same as the slogan matrix), so gate it on available RAM; reranking adds a
-0.6B-model load + ~1-2 s/query on GPU (much slower on CPU) — keep it env-gated.
+Wiring tests: `tests/test_statement_channel.py`. `rrf_k=10` is the
+constructor default (no wiring needed).
+
+Why the statement channel is opt-in and NOT auto-detected (the honest memory
+math, one machine, fp32-resident serving):
+
+| dense tier | disk | resident RAM | self-recall R@1 (n=3000) |
+|---|---|---|---|
+| binary sidecar (`MATHLAS_QUANTIZED=binary`) | 1.9 GB (+15.1 rescore) | ~minimal (memmap) | 0.614 |
+| int8 sidecar (`MATHLAS_QUANTIZED=int8`) | 15.1 GB | ~minimal (memmap) | 0.615 |
+| fp16 single channel (default) | 30.2 GB | ~57.5 GB fp32 | 0.614 |
+| fp16 dual channel (`MATHLAS_STATEMENT_INDEX`) | 60.4 GB | ~115 GB fp32 | 0.965 (proxy-leaky, see headline) |
+
+A second 3,683,428 x 4096 matrix roughly DOUBLES resident RAM; merely having
+the file on disk must not change the server's footprint, so auto-detect was
+rejected. Measured at full scale on the build box (2026-06-10, logs/
+dual_serving_smoke2.log): the dual-channel retriever loads in 264 s with a
+150.1 GB process peak (the two fp32 matrices ~115 GB + 3.68M doc records +
+BM25 cache), answers the dual max-sim dense scan at ~2.75 s/query median on
+2 CPU threads, and hit 20/20 top-10 on real cached query vectors through the
+genuine retrieve() path. So plan for a ~192 GB-RAM workstation for the dual
+tier. Shipping this exposed a real loader bug, fixed in v1.2.0: from_index
+used to materialise np.load + fp32-cast + normalisation temps per matrix
+(transient >250 GB for the dual load; OOM-killed on the 251 GB build box).
+Matrices are now streamed memmap -> chunked unit-norm fp32
+(`_load_unit_fp32_matrix`), so peak load memory is essentially the resident
+footprint; pinned by `tests/test_statement_channel.py`. The dual tier is
+incompatible with `MATHLAS_QUANTIZED` (the statement channel is served fp32;
+from_index raises an honest error). Reranking adds a 0.6B-model load +
+~1-2 s/query on GPU (much slower on CPU), hence env-gated too. Query encoding
+still needs the Qwen3-Embedding-8B encoder in all tiers.

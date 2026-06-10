@@ -206,8 +206,10 @@ class HybridRetriever(Retriever):
                 raise ValueError(
                     f"statement matrix rows ({sm.shape[0]}) != docs "
                     f"({len(self.docs)})")
-            self._stmt_emb: Optional[np.ndarray] = _ensure_unit_rows(
-                sm.astype(np.float32))
+            # a float32 matrix is ADOPTED (normalised in place, not copied):
+            # a second full copy is ~60 GB at the served scale. Non-fp32
+            # inputs are converted (copied) as before.
+            self._stmt_emb: Optional[np.ndarray] = _ensure_unit_rows(sm)
         else:
             self._stmt_emb = None
 
@@ -241,7 +243,9 @@ class HybridRetriever(Retriever):
                     f"precomputed matrix rows ({emb.shape[0]}) != docs "
                     f"({len(self.docs)})")
             # keep float32 unit-norm rows for an exact cosine dot-product.
-            self._emb = _ensure_unit_rows(emb.astype(np.float32))
+            # fp32 input is ADOPTED in place (see _ensure_unit_rows): the
+            # served 3.68M matrix is ~60 GB and must not be copied again.
+            self._emb = _ensure_unit_rows(emb)
         elif self.docs:
             self._emb = self.embedder.encode([d.embed_text for d in self.docs],
                                              is_query=False).astype(np.float32)
@@ -331,7 +335,10 @@ class HybridRetriever(Retriever):
                                         shortlist=quantized_shortlist)
             matrix = None                 # never touch the 30 GB member
         else:
-            matrix = np.asarray(data["matrix"])
+            # memory-lean: stream the member into ONE unit-norm fp32 array
+            # (see _load_unit_fp32_matrix; np.load's transient copies OOM'd
+            # the dual-channel load on a 251 GB box).
+            matrix = _load_unit_fp32_matrix(path)
         # Meta source: the full corpus stores a sidecar JSONL (referenced by
         # ``meta_file``, streamed line by line so we never hold a giant string);
         # small dev indices store an in-npz ``meta`` JSON list. Prefer the sidecar.
@@ -366,8 +373,7 @@ class HybridRetriever(Retriever):
                 if with_bm25 else None)
         stmt_matrix = None
         if statement_index is not None:
-            sdata = np.load(statement_index, allow_pickle=True)
-            stmt_matrix = np.asarray(sdata["matrix"])
+            stmt_matrix = _load_unit_fp32_matrix(statement_index)
             if stmt_matrix.shape != matrix.shape:
                 raise ValueError(
                     f"statement index shape {stmt_matrix.shape} != slogan index "
@@ -726,12 +732,56 @@ def _log(msg: str) -> None:
 def _ensure_unit_rows(x: np.ndarray) -> np.ndarray:
     """L2-normalise rows so a dot-product is cosine. The build writes unit-norm
     rows already, but a fp16->fp32 round-trip can leave tiny drift; renormalise
-    defensively (cheap, and makes a hand-built dev matrix safe too)."""
+    defensively (cheap, and makes a hand-built dev matrix safe too).
+
+    Memory contract: a writable float32 input is normalised IN PLACE, chunked,
+    and returned as-is -- at the served 3.68M x 4096 scale the old
+    ``(x / n).astype(np.float32)`` allocated a full ~60 GB temp per matrix,
+    which (with the optional second statement matrix) OOM-killed a 251 GB box
+    at load time (measured 2026-06-10). Non-float32 / read-only inputs are
+    copied first, so callers that pass a fresh ``astype`` copy see the old
+    behaviour exactly."""
+    x = np.asarray(x)
     if x.size == 0:
         return x.astype(np.float32)
-    n = np.linalg.norm(x, axis=1, keepdims=True)
-    n[n == 0] = 1.0
-    return (x / n).astype(np.float32)
+    x = x.astype(np.float32, copy=False)
+    if not x.flags.writeable:
+        x = x.copy()
+    chunk = 200_000
+    for i in range(0, x.shape[0], chunk):
+        n = np.linalg.norm(x[i:i + chunk], axis=1, keepdims=True)
+        n[n == 0] = 1.0
+        x[i:i + chunk] /= n
+    return x
+
+
+def _load_unit_fp32_matrix(path: str, member: str = "matrix.npy") -> np.ndarray:
+    """Stream an npz matrix member into ONE unit-norm fp32 array.
+
+    ``np.load(path)["matrix"]`` materialises the raw member (30 GB fp16 at the
+    served 3,683,428-doc scale), then the fp32 conversion and the
+    normalisation temp pile on top -- with the opt-in second (statement)
+    matrix that transient peak exceeded 250 GB and the loader was OOM-killed
+    on the build box. ``np.savez`` members are ZIP_STORED, so instead memmap
+    the fp16 bytes in place (zero RAM) and convert+renormalise chunkwise into
+    one preallocated fp32 array: peak extra memory is a 200k-row chunk, not a
+    matrix copy. Falls back to the plain ``np.load`` path for compressed /
+    exotic npz files (small dev indexes)."""
+    try:
+        from .quantized import npz_member_memmap
+        src = npz_member_memmap(path, member)
+    except Exception:                      # compressed npz etc. -> old path
+        return _ensure_unit_rows(
+            np.asarray(np.load(path, allow_pickle=True)[member[:-4]])
+            .astype(np.float32))
+    out = np.empty(src.shape, dtype=np.float32)
+    chunk = 200_000
+    for i in range(0, src.shape[0], chunk):
+        c = src[i:i + chunk].astype(np.float32)
+        n = np.linalg.norm(c, axis=1, keepdims=True)
+        n[n == 0] = 1.0
+        np.divide(c, n, out=out[i:i + chunk])
+    return out
 
 
 __all__ = ["HybridRetriever", "rrf_fuse"]

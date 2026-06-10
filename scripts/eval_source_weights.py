@@ -76,6 +76,8 @@ Q110 = os.path.join(WORK, "queries_webaug110.npz")
 CODES = os.path.join(WORK, "source_codes_full.npy")
 RESULTS = os.path.join(WORK, "source_weights_results.json")
 DENSE110 = os.path.join(WORK, "dense110_top200.npz")
+STMT_INDEX = os.path.join(DL, "index_full_statement.npz")
+DENSE110_DUAL = os.path.join(WORK, "dense110dual_top200.npz")
 
 DOLMA = KNOWN_SOURCE_KEYS.index("dolma")
 
@@ -199,11 +201,12 @@ def cmd_selfrecall(_args) -> None:
 # --------------------------------------------------------------------- #
 # stage: dense110  (one streamed pass over the matrix -> exact fp32 ranks)
 # --------------------------------------------------------------------- #
-def _stream_matrix_sims(Q: np.ndarray, chunk_rows: int = 65536) -> np.ndarray:
+def _stream_matrix_sims(Q: np.ndarray, path: str = INDEX,
+                        chunk_rows: int = 65536) -> np.ndarray:
     """Exact renormalised-fp32 cosine sims (N, nq) in ONE streamed pass over the
     npz's uncompressed matrix member — the same math from_index serves
     (fp16 rows -> fp32 -> L2-renormalise; see hybrid._ensure_unit_rows)."""
-    zf = zipfile.ZipFile(INDEX)
+    zf = zipfile.ZipFile(path)
     info = zf.getinfo("matrix.npy")
     f = zf.open(info)
     version = np.lib.format.read_magic(f)
@@ -231,12 +234,19 @@ def _stream_matrix_sims(Q: np.ndarray, chunk_rows: int = 65536) -> np.ndarray:
     return sims
 
 
-def cmd_dense110(_args) -> None:
+def cmd_dense110(args) -> None:
+    dual = getattr(args, "dual", False)
     d = np.load(Q110, allow_pickle=True)
     Q = d["Q"].astype(np.float32)
     queries = [str(s) for s in d["queries"]]
     codes = np.load(CODES)
     sims = _stream_matrix_sims(Q)
+    if dual:
+        # dual-channel max-sim: per doc max(slogan-sim, statement-sim) — the
+        # EXACT shipped math of HybridRetriever._dense_rank with a loaded
+        # statement matrix (both channels unit-norm fp32, np.maximum).
+        print(f"# dual: second pass over {STMT_INDEX} ...", flush=True)
+        np.maximum(sims, _stream_matrix_sims(Q, path=STMT_INDEX), out=sims)
     depth = 200
     nondolma = codes != DOLMA
     top = np.zeros((len(queries), depth), dtype=np.int64)
@@ -249,9 +259,10 @@ def cmd_dense110(_args) -> None:
         part = np.argpartition(-masked, depth)[:depth]
         part = part[np.argsort(-masked[part])]
         top_nd[j] = part
-    np.savez(DENSE110, queries=np.array(queries, dtype=object),
+    out_path = DENSE110_DUAL if dual else DENSE110
+    np.savez(out_path, queries=np.array(queries, dtype=object),
              top=top, top_nodolma=top_nd)
-    print(f"# wrote exact dense top-{depth} (full + no-dolma) -> {DENSE110}",
+    print(f"# wrote exact dense top-{depth} (full + no-dolma) -> {out_path}",
           flush=True)
 
 
@@ -268,10 +279,11 @@ def _load_bench():
     return mod
 
 
-def cmd_eval110(_args) -> None:
+def cmd_eval110(args) -> None:
+    dual = getattr(args, "dual", False)
     bench = _load_bench()
     test = bench._load_test(TEST)
-    dd = np.load(DENSE110, allow_pickle=True)
+    dd = np.load(DENSE110_DUAL if dual else DENSE110, allow_pickle=True)
     dense_top = {str(q): list(map(int, r))
                  for q, r in zip(dd["queries"], dd["top"])}
     dense_top_nd = {str(q): list(map(int, r))
@@ -345,6 +357,17 @@ def cmd_eval110(_args) -> None:
               f"paper {ph_r}/{nr}={rec['reach_paper_pct']}% "
               f"({time.time()-t0:.0f}s)", flush=True)
 
+    if dual:
+        # dual-channel run: the question is whether the statement channel
+        # ALONE (no source knob) recovers the pre-growth paper-level 13.6%
+        # (15/110); no baseline assert — these ARE the new numbers.
+        off = results["off"]
+        verdict = ("RECOVERS" if off["paper_hit20"] >= 15 else "does NOT recover")
+        print(f"# dual-channel default-off: paper {off['paper_hit20']}/110 = "
+              f"{off['paper_pct']}% -> {verdict} the pre-growth 13.6% "
+              f"(15/110) without the source-weights knob", flush=True)
+        _save_results({"webaug110_dual_dolma_matrix": results})
+        return
     # the off row must reproduce the measured 2026-06-10 baseline exactly.
     off = results["off"]
     assert (off["paper_hit20"], off["thm_hit20"]) == (13, 11), \
@@ -358,6 +381,11 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("stage", choices=["codes", "selfrecall", "dense110",
                                       "eval110"])
+    ap.add_argument("--dual", action="store_true",
+                    help="dense110/eval110: dense channel = dual-channel "
+                         "max-sim (slogan + statement matrices), the shipped "
+                         "statement_index math; results land under "
+                         "webaug110_dual_dolma_matrix")
     args = ap.parse_args()
     {"codes": cmd_codes, "selfrecall": cmd_selfrecall,
      "dense110": cmd_dense110, "eval110": cmd_eval110}[args.stage](args)
