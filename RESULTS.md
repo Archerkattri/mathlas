@@ -13,10 +13,10 @@ the tool returns *nothing* rather than a plausible guess (the honesty gate). The
 
 _Last validated: 2026-06-10 — full retest: §1 tiers + §2 moat + §2b tools all
 re-run green (numeric 8/8 fp 0/3, sequence 8/8, formal 7/7, ramanujan 6/6 fp 0/2,
-moat 15/15+6/6, tools 14/14, pytest 73 passed / 1 skipped opt-in-network);
+moat 15/15+6/6, tools 14/14, pytest 94 passed / 1 skipped opt-in-network);
 verify_formal proof checking + formal-search cache; quantized laptop tier measured
 CPU-only; §2c agent-in-the-loop with/without measured with **Claude Fable 5** as
-the driving model; §3b/§3c TheoremSearch head-to-head + the self-augmenting loop
+the driving model, expanded to 18 tasks (10 original + 8-task hard set); §3b/§3c TheoremSearch head-to-head + the self-augmenting loop
 re-measured on the served **3,683,428-doc** index (§3c additionally re-verified
 with an isolated findings store: exactly 82 findings, same 59.1/70.0). Hardware:
 single box, CPU tiers; retrieval used 2×GPU for the offline index build + 1 GPU
@@ -117,16 +117,23 @@ through the real server). The server calls no LLM and needs no API key.
 ### 2c. Agent-in-the-loop: the same model WITH vs WITHOUT mathlas
 
 _Measured 2026-06-10; driving model = **Claude Fable 5** (`claude -p`, headless);
+n = 18 tasks x 2 arms, sequential, same 600 s per-cell timeout in BOTH arms;
 served index = the 3.68M-doc build; run: `PYTHONPATH=. python3
 benchmarks/agent_bench.py --model claude-fable-5`. Transcripts in
 `logs/agent_bench/`._
 
-The same coding agent gets 10 math tasks twice — **WITH** the live mathlas MCP
+The same coding agent gets 18 math tasks twice: **WITH** the live mathlas MCP
 server as the *only* allowed tool (no web, no bash), and **WITHOUT** any tools
 (pure parametric). Grading is deterministic regex vs known ground truth (this
-script grades, not a model); the set includes three hallucination traps
-(√2+√3 ≈ π, e^π−π ≈ 20, and a constant with **no** known closed form where the
-honest answer is UNIDENTIFIED).
+script grades, not a model). The set = the original 10 tasks (kept verbatim for
+continuity, three hallucination traps included) + an 8-task **hard set** added
+2026-06-10 after the original set saturated, designed so that VERIFICATION, not
+recall, is the bottleneck.
+
+**Headline: WITH mathlas 18/18, WITHOUT 15/18.** The whole gap comes from the
+hard set (8/8 vs 5/8): the original 10 stay 10/10 both ways.
+
+**Original 10 (saturated for this model, reported plainly):**
 
 | Task | WITH (tools used) | WITHOUT |
 |---|---|---|
@@ -141,30 +148,68 @@ honest answer is UNIDENTIFIED).
 | search_bw | PASS (search + applicability_checklist) | PASS |
 | lean_refute | PASS (verify_formal — real kernel refutation) | PASS (verdict asserted, kernel unavailable) |
 
-**Result: WITH mathlas 10/10 — WITHOUT 10/10.** Reported plainly: on this
-10-task set, **Claude Fable 5 passes everything from parametric knowledge alone —
-the tool added no pass-rate headroom for this model**, including all three traps
-(it declared the no-closed-form constant UNIDENTIFIED unaided). An accuracy gap
-on these tasks would have to be measured on weaker models or harder tasks; we
-did not measure one, so we do not claim one.
+On the original 10, **Claude Fable 5 passes everything from parametric
+knowledge alone** (including all three traps; it declared the no-closed-form
+constant UNIDENTIFIED unaided). That set no longer discriminates for frontier
+models, which is exactly why the hard set exists.
 
-What the WITH arm changes is the **evidence status** of the same answers, and
-that is the actual product claim:
+**Hard set (added 2026-06-10).** Every ground truth below was established by a
+deterministic computation with no LLM in the loop, recorded next to the task
+definitions in `benchmarks/agent_bench.py`: mpmath at 60-80 dps for the
+constants, `mpmath.pslq` for the engineered near-identities, exact term-match
+uniqueness against the local OEIS `stripped.gz` for the sequences, and the real
+Lean 4.30.0 kernel for the proof pair.
 
-- every closed-form identification came back **independently re-verified to 50
-  digits** (`identify_constant`/`verify_numeric`) instead of asserted;
-- `lean_refute`: the WITH arm had the **real Lean kernel refute** `2+2=5 := rfl`
-  and quoted the kernel error; the WITHOUT arm answered correctly but admitted
-  "I wasn't able to run a real Lean kernel" — right verdict, unverifiable;
-- the no-closed-form trap: WITH = UNIDENTIFIED after 8 tool calls / 4
-  independent negative checks (PSLQ, sequence, Ramanujan CF) in 204 s; WITHOUT
-  = the same verdict unverified in 497 s (its first attempt errored out at the
-  harness level and was re-run);
-- tool-use behavior: in 9/10 WITH tasks the model **chose** to call mathlas
-  (only Catalan's constant was answered directly); in the WITHOUT arm it
-  *tried* to reach a shell anyway on both verification tasks (blocked by the
-  harness each time, as designed) — the model wants hands, and mathlas is the
-  sanctioned, no-API-key pair.
+| Hard task (deterministic ground truth) | WITH | WITHOUT |
+|---|---|---|
+| pslq_combo_50d: 50-digit value, find integers in a*pi + b*e + c*log(2). GT (mpmath, 60 dps): a=37, b=-24, c=53 | PASS (identify_constant, 36 s) | **FAIL: timed out at 600 s attempting the search by hand** |
+| near_id_32d: is 15231*pi + 48065*e - 3279*log(2) + 327779*zeta(3) - 188054*G = 397989? GT: FALSE, sides agree to 32 digits (pslq-engineered; residual 1.475e-27 at 80 dps) | PASS (verify_numeric, 60 s) | PASS (286 s: evaluated all six terms to 45 digits BY HAND, residual exactly right) |
+| near_id_float: is 3860*pi - 266*e - 1217*log(2) - 4825*zeta(3) = 4760? A binary64 double says EQUAL. GT: FALSE, short by 7.545e-16 | PASS (verify_numeric, 343 s) | PASS, see leniency note (311 s: simulated IEEE-754 rounding bit-for-bit by hand) |
+| machin_takano: is Takano's 1982 formula 12*atan(1/49) + 32*atan(1/57) - 5*atan(1/239) + 12*atan(1/110443) = pi/4? GT: TRUE (control; residual 7.8e-62) | PASS (verify_numeric, 81 s) | PASS (105 s: PROVED it exactly via Gaussian-integer factorization, in context) |
+| seq_catalan_imposter: 12 terms matching Catalan A000108 for 8 terms, then 1426 != 1430. GT: A058094 (unique in local OEIS) | PASS (identify_sequence, 64 s) | **FAIL: timed out at 600 s** |
+| seq_fib_imposter: 13 terms matching Fibonacci for 9 terms, then 56 != 55. GT: A302019 (unique in local OEIS) | PASS (identify_sequence, 49 s) | **FAIL: deduced the right recurrence (parts 1, 2, 9 compositions) but guessed the wrong A-number (A079962)** |
+| lean_mul_one_rfl: does `theorem t : forall (n : Nat), n * 1 = n := fun n => rfl` typecheck? GT (real kernel): REJECTED (n * 1 unfolds to 0 + n, which is stuck) | PASS (verify_formal kernel run, 35 s) | PASS (32 s, correct from knowledge of core defeq, kernel admittedly unavailable) |
+| lean_add_zero_rfl: same with `n + 0 = n`. GT (real kernel): ACCEPTED (control; Nat.add recurses on its 2nd arg) | PASS (verify_formal kernel run, 34 s) | PASS (60 s, correct from knowledge, same caveat) |
+
+**Where the delta is.** All three bare failures are deterministic-search tasks:
+integer-relation detection over 50 digits and exact OEIS lookup at depth are
+neither recallable nor mentally computable, so the bare model either times out
+or names a plausible wrong sequence. That is the discriminating regime for
+frontier models; precision arithmetic alone no longer is (see below).
+
+**What Fable 5 did bare, honestly reported.** The bare passes on the hard set
+were earned, not guessed, and they surprised us:
+
+- near_id_32d: it evaluated a 6-term combination to 45 decimal places by hand
+  in its reasoning chain and reported the residual (1.475e-27) and the digit
+  agreement (32) exactly right, in 286 s vs 60 s with tools.
+- near_id_float: it simulated round-to-nearest binary64 arithmetic by hand,
+  producing the correctly-rounded 53-bit significand of every product, and got
+  the true-value digits right. Leniency note: its prose magnitude had the wrong
+  exponent ("7.5 x 10^-19" where the truth is 7.5e-16, inconsistent with its
+  own correct digit string). The pre-registered grader accepts the verdict plus
+  the leading digits, so this scores PASS; a strict magnitude grader would have
+  failed it. The WITH arm's magnitude was exactly right.
+- machin_takano: instead of computing digits it produced an exact algebraic
+  proof (factoring x + i over the Gaussian integers); correct and verifiable.
+- the Lean pair: it knows Lean 4 core definitional reduction cold, including
+  that `n * 1` reduces to `0 + n` and gets stuck while `n + 0` closes by `rfl`.
+
+**What the WITH arm changes** even where both arms pass is the evidence status,
+which is the actual product claim: every closed form re-verified independently
+to 50+ digits, Lean verdicts from the real kernel with the kernel error quoted
+verbatim (both arms of the old set, plus the hard-set pair, kept this pattern),
+3-9x lower latency on the precision tasks, and no wrong-exponent slips. In the
+WITHOUT arm the model repeatedly tried to reach a shell anyway (Bash, then
+harness side channels: ToolSearch, Monitor, TaskCreate); every attempt was
+blocked by the CLI approval layer, verified in the transcripts. The model wants
+hands; mathlas is the sanctioned, no-API-key pair.
+
+Hardening fix shipped with this set: sympy 1.x parses a bare `e` as
+`Symbol('e')`, not Euler's number, so every `identify_constant` hit containing
+`e` had failed its own verify gate and returned UNIDENTIFIED.
+`mathlas/verify.py` now maps `e -> E` before the independent sympy re-eval
+(this is what makes pslq_combo_50d solvable WITH tools).
 
 ---
 

@@ -82,6 +82,74 @@ TASKS = [
      "In Lean 4, does `rfl` prove `2 + 2 = 5`? If you can, check with a real "
      "Lean kernel and report the verdict. Answer concisely.",
      r"\bno\b|refuted|not a definitional|fails"),
+    # ----------------------------------------------------------------- #
+    # HARD SET (added 2026-06-10): tasks where VERIFICATION, not recall,
+    # is the bottleneck. Every ground truth below was established by a
+    # deterministic computation recorded here (no LLM in the loop):
+    #   * pslq_combo_50d: value = 37*pi - 24*e + 53*log(2) evaluated by
+    #     mpmath at 60 dps (unique for |coeff|<100 by linear independence).
+    #   * near_id_32d: coefficients found by mpmath.pslq at 31 dps over
+    #     [pi, e, log2, zeta(3), catalan, 1]; deviation re-evaluated at
+    #     80 dps = 1.475e-27 (sides agree to ~32 significant digits).
+    #   * near_id_float: mpmath.pslq at 17 dps over [pi, e, log2, zeta3, 1];
+    #     deviation at 80 dps = 7.545e-16 (a 64-bit double says EQUAL).
+    #   * machin_takano: Takano 1982 Machin-like formula, exact; mpmath
+    #     residual at 60 dps = 7.8e-62 (true control vs the two traps).
+    #   * seq imposters: unique exact-term matches in the local OEIS
+    #     stripped.gz (A058094 shares its first 8 terms with Catalan
+    #     A000108 then diverges 1426!=1430; A302019 shares its first 9
+    #     terms with Fibonacci A000045 then diverges 56!=55).
+    #   * lean pair: verdicts from the real Lean 4.30.0 kernel run locally:
+    #     `n + 0 = n := fun n => rfl` VERIFIED_PROOF (defeq, Nat.add recurses
+    #     on its 2nd arg); `n * 1 = n := fun n => rfl` REFUTED (n*1 unfolds
+    #     to n*0 + n = 0 + n, which is NOT definitionally n).
+    # ----------------------------------------------------------------- #
+    ("pslq_combo_50d",
+     "This constant is known to equal a*pi + b*e + c*log(2) for integers "
+     "a, b, c with absolute values < 100: "
+     "87.73696486948236557358420830616106487712284464917341 (50 digits). "
+     "Find the exact integers a, b, c. Answer concisely.",
+     r"(?=.*\b37\b)(?=.*\b24\b)(?=.*\b53\b)"),
+    ("near_id_32d",
+     "Claim: 15231*pi + 48065*e - 3279*log(2) + 327779*zeta(3) "
+     "- 188054*catalan = 397989 exactly (catalan = Catalan's constant; "
+     "the two sides agree at double precision). Decide TRUE or FALSE, and "
+     "report how many significant digits the two sides agree to. "
+     "Answer concisely.",
+     r"(?=.*\b(false|no|not exact\w*)\b)"
+     r"(?=.*(\b3[0-4]\b|[eE]-?2[6-8]\b|10\^\{?-?2[6-8]|10\*\*\s?-?2[6-8]))"),
+    ("near_id_float",
+     "In IEEE double precision, 3860*pi - 266*e - 1217*log(2) - "
+     "4825*zeta(3) evaluates to exactly 4760. Is it exactly equal to 4760? "
+     "If not, give the magnitude of the difference. Answer concisely.",
+     r"(?=.*\b(no|not|false)\b)"
+     r"(?=.*(7\.5|[eE]-?1[56]\b|10\^\{?-?1[56]|10\*\*\s?-?1[56]"
+     r"|\b1[89]\s*(significant\s*)?digits))"),
+    ("machin_takano",
+     "Is 12*atan(1/49) + 32*atan(1/57) - 5*atan(1/239) + "
+     "12*atan(1/110443) exactly equal to pi/4? Answer YES or NO concisely, "
+     "and say how many digits you checked.",
+     r"\byes\b"),
+    ("seq_catalan_imposter",
+     "Which OEIS sequence is 1, 1, 2, 5, 14, 42, 132, 429, 1426, 4806, "
+     "16329, 55740? Give the A-number. Answer concisely.",
+     r"a\s*0*58094"),
+    ("seq_fib_imposter",
+     "Which OEIS sequence is 1, 1, 2, 3, 5, 8, 13, 21, 34, 56, 91, 149, "
+     "243? Give the A-number. Answer concisely.",
+     r"a\s*302019"),
+    ("lean_mul_one_rfl",
+     "In Lean 4 (core, no mathlib), does this typecheck: "
+     "`theorem t : ∀ (n : Nat), n * 1 = n := fun n => rfl` ? "
+     "If you can, check with a real Lean kernel. Answer ACCEPTS or REJECTS "
+     "concisely, with the reason.",
+     r"rejects?\b|refut|\bfails?\b|does(n't| not) typecheck"),
+    ("lean_add_zero_rfl",
+     "In Lean 4 (core, no mathlib), does this typecheck: "
+     "`theorem t : ∀ (n : Nat), n + 0 = n := fun n => rfl` ? "
+     "If you can, check with a real Lean kernel. Answer ACCEPTS or REJECTS "
+     "concisely, with the reason.",
+     r"accepts?\b|verified_proof|\btypechecks\b|kernel accept"),
 ]
 
 MCP_CONFIG = {

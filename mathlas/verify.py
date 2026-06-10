@@ -27,6 +27,10 @@ _NAME_MAP = [
     ("catalan", "Catalan"),
     ("euler", "EulerGamma"),     # mpmath 'euler' = Euler-Mascheroni gamma
     ("apery", "zeta(3)"),        # Apery's constant
+    ("e", "E"),                  # sympy 1.x parses bare 'e' as Symbol('e'),
+                                 # NOT Euler's number -- without this map every
+                                 # identify hit containing 'e' failed its own
+                                 # verify gate and came back UNIDENTIFIED
 ]
 _WORD = re.compile(r"[A-Za-z_]\w*")
 
