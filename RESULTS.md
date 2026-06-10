@@ -11,16 +11,18 @@ returned result is an independently-checkable fact, and on inputs with no such f
 the tool returns *nothing* rather than a plausible guess (the honesty gate). The
 **zero false-positive rate across every tier** below is that discipline holding.
 
-_Last validated: 2026-06-10 — full retest: §1 tiers + §2 moat + §2b tools all
-re-run green (numeric 8/8 fp 0/3, sequence 8/8, formal 7/7, ramanujan 6/6 fp 0/2,
-moat 15/15+6/6, tools 14/14, pytest 94 passed / 1 skipped opt-in-network);
+_Last validated: 2026-06-10 (v1.2.0) — full retest: §1 tiers + §2 moat + §2b tools
+all re-run green (numeric 8/8 fp 0/3, sequence 8/8, formal 7/7, ramanujan 6/6 fp
+0/2, moat 15/15+6/6, tools 14/14, pytest 111 passed / 1 skipped opt-in-network);
 verify_formal proof checking + formal-search cache; quantized laptop tier measured
 CPU-only; §2c agent-in-the-loop with/without measured with **Claude Fable 5** as
 the driving model, expanded to 18 tasks (10 original + 8-task hard set); §3b/§3c TheoremSearch head-to-head + the self-augmenting loop
 re-measured on the served **3,683,428-doc** index (§3c additionally re-verified
-with an isolated findings store: exactly 82 findings, same 59.1/70.0). Hardware:
-single box, CPU tiers; retrieval used 2×GPU for the offline index build + 1 GPU
-for the query encoder._
+with an isolated findings store: exactly 82 findings, same 59.1/70.0); §3a0
+dual-channel statement index built over the full corpus and measured (R@1
+0.614 -> 0.965 on the n=3000 proxy; partial lift on the 110 human queries).
+Hardware: single box, CPU tiers; retrieval used 2×GPU for the offline index
+build + 1 GPU for the query encoder._
 
 ---
 
@@ -254,6 +256,40 @@ be embedded by the index's own Qwen3-Embedding-8B — quantization shrinks the
 document side only (full honesty note + mechanism tests:
 `docs/QUANTIZED_TIER.md`, `tests/test_quantized_tier.py`).
 
+**Dual-channel statement index (2026-06-10, v1.2, opt-in):** the same
+3,683,428 docs embedded a second time by their cleaned LaTeX **statement**
+(Qwen3-Embedding-8B, row-aligned with the served matrix; built by
+`scripts/build_statement_channel.py`, 921 resumable shards on one GPU), folded
+into the dense ranking by per-doc max-sim. Measured on the SAME cached n=3000
+queries as the headline (`scripts/eval_retrieval_upgrades.py final`):
+
+| Dense config (n=3000, full 3.68M) | R@1 | R@10 | MRR |
+|---|---|---|---|
+| slogan channel only (the headline above) | 0.614 | 0.832 | 0.698 |
+| **dual channel, max-sim (statement + slogan)** | **0.965** | **0.999** | **0.982** |
+| dual-dense + BM25, rrf_k=10 | 0.966 | 1.000 | 0.982 |
+
+Honest caveats, in order of importance: (1) this eval is a self-retrieval
+proxy and the statement channel indexes the very text the queries are drawn
+from, so like BM25 it carries an exact-text advantage here; the validated
+design claim is that a statement-shaped query now has a dense channel in its
+own surface form. On the no-leak 110 human-query benchmark (§3b) the dual
+channel's lift is real but partial (paper Hit@20 11.8% -> 12.7%). (2) The
+second matrix roughly doubles serving RAM (measured at full scale: 150 GB
+process peak, 264 s load, ~2.75 s/query dual dense scan on 2 CPU threads,
+20/20 top-10 on real query vectors through the genuine retrieve() path), so
+it is strictly opt-in (`MATHLAS_STATEMENT_INDEX`, never auto-detected) and not
+combinable with the quantized tier. Shipping it exposed and fixed a real
+loader bug: from_index's matrix load used to materialise fp16 + fp32 +
+normalisation temps (transient >250 GB for the dual load, OOM-killed on the
+251 GB build box); matrices now stream memmap -> chunked unit-norm fp32, so
+peak load memory equals the resident footprint (regression-tested). Full
+tables + the serving-tier decision:
+`docs/RETRIEVAL_UPGRADE_NOTES.md`. Also shipped in the same upgrade pass:
+hybrid `rrf_k` default 60 -> 10 (measured best at every metric) and an opt-in
+cross-encoder rerank blend (`MATHLAS_RERANK=1`; +1.7pp R@1 honest
+cross-representation lift, never a replacement of the first-stage order).
+
 ### 3a. Large-n self-recall — the held-out 81,833-doc test split (earlier 1.635M build)
 
 **Context: these numbers were measured at the earlier 1,635,233-doc build** (the
@@ -333,6 +369,11 @@ reachable)** with theorem-level *above* the old 1.34M index (11.8% vs 10.9%). It
 a **per-query-intent knob, not a free win**: on the n=3000 self-recall (whose targets
 are ~65% Dolma docs) dolma-target R@10 collapses 0.999 → 0.884 at weight 0.5 and
 → 0 at exclude — hence opt-in, default off. Same n=15 small-sample caveat as above.
+The v1.2 dual channel was tested as a structural (knob-free) fix for this same
+regression: at default settings it recovers part of it (paper 11.8% -> 12.7%,
+theorem 10.0% -> 10.9%; reachable-15 paper 86.7% -> 93.3%) but not the full
+13.6%, and it does not stack with the knob (dual + exclude tops out at 14/15
+reachable), so the exclude knob remains the documented full mitigation here.
 Full matrix: [`docs/02_eval_vs_theoremsearch.md`](docs/02_eval_vs_theoremsearch.md).
 
 (The large-n self-recalls — §3a0 at the current 3.68M scale (body→slogan R@1 0.614 /
