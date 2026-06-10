@@ -6,6 +6,7 @@
 
 [![PyPI](https://img.shields.io/pypi/v/mathlas-mcp)](https://pypi.org/project/mathlas-mcp/)
 [![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20618603-1682D4.svg)](https://doi.org/10.5281/zenodo.20618603)
+[![Glama score](https://glama.ai/mcp/servers/Archerkattri/mathlas/badges/score.svg)](https://glama.ai/mcp/servers/Archerkattri/mathlas)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](pyproject.toml)
 
