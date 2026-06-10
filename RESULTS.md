@@ -12,7 +12,8 @@ the tool returns *nothing* rather than a plausible guess (the honesty gate). The
 **zero false-positive rate across every tier** below is that discipline holding.
 
 _Last validated: 2026-06-06 (tiers) / 2026-06-09 (retrieval numbers refreshed for
-the 3.68M index) / 2026-06-10 (verify_formal proof checking + formal-search cache). Hardware: single box, CPU tiers; retrieval used 2×GPU for the
+the 3.68M index) / 2026-06-10 (verify_formal proof checking + formal-search cache; quantized
+laptop tier measured CPU-only). Hardware: single box, CPU tiers; retrieval used 2×GPU for the
 offline index build + 1 GPU for the query encoder._
 
 ---
@@ -132,6 +133,22 @@ This is the number to quote for the served index. It is *lower* than the older
 slogan→slogan figure below because (a) the corpus is 2.25× larger and (b)
 body→slogan is a strictly harder, more honest regime than querying a slogan
 against itself-as-slogan.
+
+**Quantized laptop tier (2026-06-10)** — the same index served from memmapped
+quantized sidecars (`MATHLAS_QUANTIZED=int8|binary`), measured on the SAME
+n=3000 query embeddings as the row above (CPU-only, 4 threads;
+`scripts/eval_quantized_tier.py quantize|eval|latency`):
+
+| Dense config | disk | R@1 | R@10 | top-1 = fp16 | warm latency |
+|---|---|---|---|---|---|
+| fp16 exact (above) | 30.2 GB | 0.6140 | 0.8323 | 1.000 | — |
+| int8 dequant dot | 15.1 GB | 0.6147 | 0.8323 | 0.9967 | 30.7 s |
+| **binary Hamming top-1000 → int8 rescore** | **1.9 GB** (+15.1 rescore) | **0.6143** | **0.8323** | 0.9963 | **2.4 s** |
+
+Recall-lossless (deltas are 1–2 queries at n=3000). Caveat: queries must still
+be embedded by the index's own Qwen3-Embedding-8B — quantization shrinks the
+document side only (full honesty note + mechanism tests:
+`docs/QUANTIZED_TIER.md`, `tests/test_quantized_tier.py`).
 
 ### 3a. Large-n self-recall — the held-out 81,833-doc test split (earlier 1.635M build)
 

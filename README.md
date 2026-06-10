@@ -87,6 +87,8 @@ The discipline is **airtight-or-nothing**: a result is an independently-checkabl
 
 **The 3.68M-doc index.** `search_existing_math` is served from a **3,683,428-document** dense index (Qwen3-Embedding-8B, 4096-d): the **1.34M** permissive CC-BY/CC0 TheoremSearch subset + **2.34M** slogan-embedded arXiv-math documents from Dolma, dense + Okapi-BM25 + RRF. Honest headline recall at full 3.68M scale: **R@1 0.614 / R@10 0.832** querying by a document's raw *body* against its slogan-embedded entry — the hard **cross-representation** self-recall regime. (At the earlier 1.635M build, the easier same-representation slogan→slogan self-recall was R@1 0.977 / R@10 0.998 on its 81,833-doc held-out split.)
 
+**Quantized laptop tier (opt-in).** The fp16 matrix is 30 GB on disk (~60 GB fp32 resident) — fine on the build box, not on a laptop. `MATHLAS_QUANTIZED=binary` (or `quantized="binary"` on `HybridRetriever.from_index`) serves the SAME index from memmapped quantized sidecars instead: sign-bit Hamming over **1.9 GB** shortlists 1000 candidates, exact rescore picks the top-k — measured on the full 3.68M index with the same n=3000 protocol as the headline, it is **recall-lossless** (R@1 0.6143 vs 0.6140 fp16, R@10 equal at 0.8323; int8 mode: R@1 0.6147, 15 GB) at **2.4 s/query on 4 CPU threads**. Honest caveat: this shrinks the *document* side only — queries must still be embedded by the same Qwen3-Embedding-**8B** (a small 0.6B encoder lives in a different vector space; a true end-to-end small-encoder tier needs its own index build, deferred). Numbers, build command, and the caveat in full: [`docs/QUANTIZED_TIER.md`](docs/QUANTIZED_TIER.md).
+
 ## The self-augmenting loop — beating TheoremSearch
 
 On TheoremSearch's own **110 human-written queries**, baseline mathlas hits a coverage floor — TheoremSearch withheld 85% of their private 9.2M corpus, so 95 target papers are unreachable for any open system. The AI then runs the loop: for each missing theorem it web-finds the real statement, embeds it with the same Qwen3-Embedding-8B, and `add_finding(dense_vec=…)` fuses it through the dense channel at runtime:
@@ -174,6 +176,7 @@ print(identify_sequence([1,1,2,3,5,8,13,21]).matches[1].a_number)  # -> 'A000045
 - [`RESULTS.md`](RESULTS.md) — every tool's validation, reproduced, with commands.
 - [`docs/methods.md`](docs/methods.md) — architecture, design decisions, citations.
 - [`docs/05_open_dataset.md`](docs/05_open_dataset.md) — the open dataset & the index.
+- [`docs/QUANTIZED_TIER.md`](docs/QUANTIZED_TIER.md) — the quantized laptop tier: measured recall/footprint/latency.
 - [`docs/02_eval_vs_theoremsearch.md`](docs/02_eval_vs_theoremsearch.md) — the retrieval head-to-head.
 - [`docs/REGISTRY_PUBLISH.md`](docs/REGISTRY_PUBLISH.md) — publishing to the official MCP registry.
 

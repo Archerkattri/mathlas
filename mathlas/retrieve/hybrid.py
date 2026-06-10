@@ -77,7 +77,7 @@ class HybridRetriever(Retriever):
                  rrf_k: int = 10, channel_depth: int = 50,
                  citation_lambda: float = 0.0,
                  _precomputed_emb: Optional[np.ndarray] = None,
-                 _faiss_index=None, build_bm25: bool = True,
+                 _faiss_index=None, _quant_index=None, build_bm25: bool = True,
                  _prebuilt_bm25: Optional[BM25Index] = None,
                  statement_matrix: Optional[np.ndarray] = None,
                  reranker: Optional[Reranker] = None,
@@ -121,10 +121,18 @@ class HybridRetriever(Retriever):
             self._bm25 = BM25Index([d.sparse_text for d in self.docs]) if build_bm25 else None
 
         # DENSE channel, exactly one mode: a prebuilt FAISS ANN index (the 10M+ scale path, query
-        # searched against it), a precomputed flat matrix (from_index, exact dot-product), or
-        # embed-the-corpus-now.
+        # searched against it), a memmap-served QUANTIZED index (the laptop tier — int8 exact dot
+        # or binary-Hamming shortlist + exact rescore, see retrieve/quantized.py), a precomputed
+        # flat matrix (from_index, exact dot-product), or embed-the-corpus-now.
         self._faiss = _faiss_index
-        if _faiss_index is not None:
+        self._quant = _quant_index
+        if _quant_index is not None:
+            if _quant_index.n != len(self.docs):
+                raise ValueError(
+                    f"quantized index rows ({_quant_index.n}) != docs "
+                    f"({len(self.docs)})")
+            self._emb = None
+        elif _faiss_index is not None:
             self._emb = None
         elif _precomputed_emb is not None:
             emb = np.asarray(_precomputed_emb)
@@ -152,7 +160,9 @@ class HybridRetriever(Retriever):
                    bm25_cache: Optional[str] = "auto",
                    statement_index: Optional[str] = None,
                    reranker: Optional[Reranker] = None,
-                   rerank_depth: int = 100) -> "HybridRetriever":
+                   rerank_depth: int = 100,
+                   quantized: Optional[str] = None,
+                   quantized_shortlist: int = 1000) -> "HybridRetriever":
         """Build a retriever from a prebuilt ``index.npz``.
 
         The npz (written by ``scripts/build_index_mp.py finalize``) holds
@@ -191,9 +201,31 @@ class HybridRetriever(Retriever):
         ``scripts/build_statement_channel.py``), row-aligned with ``path``'s
         matrix; it becomes a third RRF channel (see ``__init__``). ``reranker``
         (opt-in) injects a cross-encoder used when ``retrieve(..., rerank=True)``.
+
+        ``quantized`` (opt-in, the LAPTOP TIER): ``"int8"`` or ``"binary"``
+        serves the dense channel from memmapped quantized sidecar artifacts
+        beside the npz (built once by ``mathlas.retrieve.quantized.
+        build_quantized_artifacts``) instead of loading the fp16 matrix to
+        fp32 RAM. ``"int8"`` is an exact dequantized dot over ~15 GB on disk;
+        ``"binary"`` is a packed-bit Hamming shortlist (~1.9 GB, size
+        ``quantized_shortlist``) rescored exactly — measured recall deltas in
+        docs/QUANTIZED_TIER.md. Queries must STILL be embedded by the index's
+        own model (see retrieve/quantized.py honesty note). Incompatible with
+        ``statement_index`` (the statement channel stays fp32-resident).
         """
         data = np.load(path, allow_pickle=True)
-        matrix = np.asarray(data["matrix"])
+        quant = None
+        if quantized is not None:
+            if statement_index is not None:
+                raise ValueError(
+                    "quantized=... does not support statement_index (the "
+                    "statement channel is served from the fp32 matrix)")
+            from .quantized import QuantizedDenseIndex
+            quant = QuantizedDenseIndex(path, kind=quantized,
+                                        shortlist=quantized_shortlist)
+            matrix = None                 # never touch the 30 GB member
+        else:
+            matrix = np.asarray(data["matrix"])
         # Meta source: the full corpus stores a sidecar JSONL (referenced by
         # ``meta_file``, streamed line by line so we never hold a giant string);
         # small dev indices store an in-npz ``meta`` JSON list. Prefer the sidecar.
@@ -214,9 +246,10 @@ class HybridRetriever(Retriever):
                     for m in json.loads(str(data["meta"]))]
         else:
             docs = []
-        if matrix.shape[0] != len(docs):
+        n_rows = quant.n if quant is not None else matrix.shape[0]
+        if n_rows != len(docs):
             raise ValueError(
-                f"index matrix rows ({matrix.shape[0]}) != meta docs "
+                f"index matrix rows ({n_rows}) != meta docs "
                 f"({len(docs)}) in {path}")
         # SPARSE channel: load a prebuilt BM25 from the cache beside the index, or
         # build it once and persist it there. Building BM25 over a multi-million-doc
@@ -236,18 +269,19 @@ class HybridRetriever(Retriever):
                     f"embeddings of the SAME corpus ({statement_index} vs {path})")
         retr = cls(docs, embedder=embedder, rrf_k=rrf_k,
                    channel_depth=channel_depth, citation_lambda=citation_lambda,
-                   _precomputed_emb=matrix, build_bm25=False, _prebuilt_bm25=bm25,
-                   statement_matrix=stmt_matrix, reranker=reranker,
-                   rerank_depth=rerank_depth)
+                   _precomputed_emb=matrix, _quant_index=quant, build_bm25=False,
+                   _prebuilt_bm25=bm25, statement_matrix=stmt_matrix,
+                   reranker=reranker, rerank_depth=rerank_depth)
         # surface a couple of index facts for introspection / logging.
+        n_dim = quant.dim if quant is not None else matrix.shape[1]
         retr.index_path = os.fspath(path)
-        retr.index_dim = int(data["dim"]) if "dim" in data else matrix.shape[1]
+        retr.index_dim = int(data["dim"]) if "dim" in data else int(n_dim)
         retr.index_model = str(data["model"]) if "model" in data else None
         if embedder is not None and getattr(embedder, "dim", None) and \
-                int(embedder.dim) != int(matrix.shape[1]):
+                int(embedder.dim) != int(n_dim):
             raise ValueError(
                 f"embedder dim ({embedder.dim}) != index dim "
-                f"({matrix.shape[1]}); query and doc vectors must match. Use the "
+                f"({n_dim}); query and doc vectors must match. Use the "
                 f"same model the index was built with (index model={retr.index_model}).")
         return retr
 
@@ -373,6 +407,9 @@ class HybridRetriever(Retriever):
         if not self.docs:
             return []
         q = self.embedder.encode([query], is_query=True)[0].astype(np.float32)
+        if self._quant is not None:               # quantized memmap path (laptop tier)
+            n = float(np.linalg.norm(q))
+            return self._quant.search(q / n if n > 0 else q, k)
         if self._faiss is not None:               # ANN path (10M+ scale)
             import faiss
             qn = np.ascontiguousarray(q[None, :])

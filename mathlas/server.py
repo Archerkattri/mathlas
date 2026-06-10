@@ -243,8 +243,19 @@ def _build_retriever(corpus_dir: Optional[str], limit: int):
         key = f"index::{index_path}"
         if key in _RETRIEVER_CACHE:
             return _RETRIEVER_CACHE[key]
+        # MATHLAS_QUANTIZED=int8|binary -> serve the dense channel from the
+        # memmapped quantized sidecars (the laptop tier, ~15 GB / ~1.9 GB on
+        # disk instead of the fp16 matrix resident as ~60 GB fp32). Artifacts
+        # are built once with mathlas.retrieve.quantized.
+        # build_quantized_artifacts(); missing artifacts raise an honest
+        # FileNotFoundError naming that builder. See docs/QUANTIZED_TIER.md.
+        quantized = os.environ.get("MATHLAS_QUANTIZED", "").strip().lower() or None
+        if quantized not in (None, "int8", "binary"):
+            raise ValueError(
+                f"MATHLAS_QUANTIZED must be 'int8' or 'binary', got {quantized!r}")
         retr = HybridRetriever.from_index(
-            index_path, embedder=_embedder_for_index(index_path)
+            index_path, embedder=_embedder_for_index(index_path),
+            quantized=quantized,
         )
         _RETRIEVER_CACHE[key] = retr
         return retr
