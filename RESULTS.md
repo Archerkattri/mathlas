@@ -11,10 +11,16 @@ returned result is an independently-checkable fact, and on inputs with no such f
 the tool returns *nothing* rather than a plausible guess (the honesty gate). The
 **zero false-positive rate across every tier** below is that discipline holding.
 
-_Last validated: 2026-06-06 (tiers) / 2026-06-09 (retrieval numbers refreshed for
-the 3.68M index) / 2026-06-10 (verify_formal proof checking + formal-search cache; quantized
-laptop tier measured CPU-only). Hardware: single box, CPU tiers; retrieval used 2×GPU for the
-offline index build + 1 GPU for the query encoder._
+_Last validated: 2026-06-10 — full retest: §1 tiers + §2 moat + §2b tools all
+re-run green (numeric 8/8 fp 0/3, sequence 8/8, formal 7/7, ramanujan 6/6 fp 0/2,
+moat 15/15+6/6, tools 14/14, pytest 73 passed / 1 skipped opt-in-network);
+verify_formal proof checking + formal-search cache; quantized laptop tier measured
+CPU-only; §2c agent-in-the-loop with/without measured with **Claude Fable 5** as
+the driving model; §3b/§3c TheoremSearch head-to-head + the self-augmenting loop
+re-measured on the served **3,683,428-doc** index (§3c additionally re-verified
+with an isolated findings store: exactly 82 findings, same 59.1/70.0). Hardware:
+single box, CPU tiers; retrieval used 2×GPU for the offline index build + 1 GPU
+for the query encoder._
 
 ---
 
@@ -27,7 +33,7 @@ honest "nothing"). Run: `PYTHONPATH=. python3 benchmarks/{numeric,tier}_bench.py
 | Tier | Tool | Recovery@known | False-positive | What makes it airtight |
 |---|---|---|---|---|
 | **Numeric** | `identify_constant` | **8/8 (100%)** | **0/3 (0%)** | independent high-precision re-eval (50–51 digits agreed) |
-| **Sequence** | `identify_sequence` | **8/8 (100%)** (all top-1) | **0/3 (0%)** | exact contiguous term-match vs local OEIS (~400k seqs) |
+| **Sequence** | `identify_sequence` | **8/8 (100%)** (7 top-1, Fibonacci top-2) | **0/3 (0%)** | exact contiguous term-match vs local OEIS (~400k seqs) |
 | **Formal** | `verify_formal` | **7/7 correct verdicts** | — | **real Lean 4.30 kernel** typecheck (4 true accepted, 3 false rejected) |
 | **Formal (proof check)** | `verify_formal(…, proof=)` | **3/3 correct proofs VERIFIED** | **0 fake passes** (wrong proof REFUTED with the kernel's error; `sorry`/`admit` REJECTED) | the **real kernel checks the full declaration** `theorem _mathlas_check : <statement> := <proof>`; toolchain-absent/timeout/missing-import ⇒ honest UNDETERMINED |
 | **Ramanujan** | `conjecture_relation` | **6/6 (100%)** | **0/2 (0%)** | PSLQ + CF, every hit re-verified to ≥25 digits |
@@ -37,8 +43,9 @@ Detail:
   the minimal-poly form) all recovered + verified to 50–51 digits; sin(1)·log(7),
   tan(2)+⅓, exp(sin 2) all correctly returned UNIDENTIFIED.
 - **Sequence** — Fibonacci A000045, primes A000040, Catalan A000108, squares A000290,
-  factorials A000142, triangular A000217, powers-of-2 A000079, Bell A000110 — every
-  one matched at **top-1**; three structureless integer runs returned UNIDENTIFIED.
+  factorials A000142, triangular A000217, powers-of-2 A000079, Bell A000110 all
+  recovered — 7 at **top-1**, Fibonacci at top-2 (A000044 contains the same contiguous 8-term run);
+  three structureless integer runs returned UNIDENTIFIED.
 - **Formal** — `2+2=4`, `n+0=n`, `¬¬b=b`, `True` typecheck (applies=True); `2+2=5`,
   `(1:Nat)=0`, a type error are **rejected by the kernel** (not "undetermined" — Lean
   actually ran and reported errors).
@@ -106,6 +113,58 @@ judge in the loop is the natural next benchmark for the end-to-end decision accu
 A000108 Catalan, `applicability_checklist(…)` → preconditions, and `verify_numeric`
 correctly **refused** to verify a 16-digit input to 20 digits (the honesty gate,
 through the real server). The server calls no LLM and needs no API key.
+
+### 2c. Agent-in-the-loop: the same model WITH vs WITHOUT mathlas
+
+_Measured 2026-06-10; driving model = **Claude Fable 5** (`claude -p`, headless);
+served index = the 3.68M-doc build; run: `PYTHONPATH=. python3
+benchmarks/agent_bench.py --model claude-fable-5`. Transcripts in
+`logs/agent_bench/`._
+
+The same coding agent gets 10 math tasks twice — **WITH** the live mathlas MCP
+server as the *only* allowed tool (no web, no bash), and **WITHOUT** any tools
+(pure parametric). Grading is deterministic regex vs known ground truth (this
+script grades, not a model); the set includes three hallucination traps
+(√2+√3 ≈ π, e^π−π ≈ 20, and a constant with **no** known closed form where the
+honest answer is UNIDENTIFIED).
+
+| Task | WITH (tools used) | WITHOUT |
+|---|---|---|
+| const_catalan | PASS (0 calls — answered directly) | PASS |
+| const_sqrt23_trap (≈π) | PASS (identify_constant) | PASS |
+| const_no_form_trap | PASS (8 calls: PSLQ + sequence + Ramanujan CF, all negative) | PASS |
+| const_zeta3 | PASS (identify_constant) | PASS |
+| seq_motzkin | PASS (identify_sequence) | PASS |
+| seq_bell | PASS (identify_sequence) | PASS |
+| verify_epi_trap (e^π−π≈20) | PASS (verify_numeric) | PASS |
+| verify_zeta4 | PASS (verify_numeric) | PASS |
+| search_bw | PASS (search + applicability_checklist) | PASS |
+| lean_refute | PASS (verify_formal — real kernel refutation) | PASS (verdict asserted, kernel unavailable) |
+
+**Result: WITH mathlas 10/10 — WITHOUT 10/10.** Reported plainly: on this
+10-task set, **Claude Fable 5 passes everything from parametric knowledge alone —
+the tool added no pass-rate headroom for this model**, including all three traps
+(it declared the no-closed-form constant UNIDENTIFIED unaided). An accuracy gap
+on these tasks would have to be measured on weaker models or harder tasks; we
+did not measure one, so we do not claim one.
+
+What the WITH arm changes is the **evidence status** of the same answers, and
+that is the actual product claim:
+
+- every closed-form identification came back **independently re-verified to 50
+  digits** (`identify_constant`/`verify_numeric`) instead of asserted;
+- `lean_refute`: the WITH arm had the **real Lean kernel refute** `2+2=5 := rfl`
+  and quoted the kernel error; the WITHOUT arm answered correctly but admitted
+  "I wasn't able to run a real Lean kernel" — right verdict, unverifiable;
+- the no-closed-form trap: WITH = UNIDENTIFIED after 8 tool calls / 4
+  independent negative checks (PSLQ, sequence, Ramanujan CF) in 204 s; WITHOUT
+  = the same verdict unverified in 497 s (its first attempt errored out at the
+  harness level and was re-run);
+- tool-use behavior: in 9/10 WITH tasks the model **chose** to call mathlas
+  (only Catalan's constant was answered directly); in the WITHOUT arm it
+  *tried* to reach a shell anyway on both verification tasks (blocked by the
+  harness each time, as designed) — the model wants hands, and mathlas is the
+  sanctioned, no-API-key pair.
 
 ---
 
@@ -176,7 +235,9 @@ search on cuda:0).
 ### 3b. Head-to-head vs TheoremSearch (110 human-written queries)
 
 Full writeup: [`docs/02_eval_vs_theoremsearch.md`](docs/02_eval_vs_theoremsearch.md).
-Evaluated on the dataset's own 110 human-written queries.
+Evaluated on the dataset's own 110 human-written queries. **Re-measured 2026-06-10
+on the served 3,683,428-doc index** (the 2026-06-06 run on the earlier 1.34M index
+is given in parentheses where it differed).
 
 Against **every baseline TheoremSearch reported** (their numbers, full-110 / full
 corpus or web access) + mathlas:
@@ -188,19 +249,21 @@ corpus or web access) + mathlas:
 | ChatGPT 5.2 w/ Search | 19.8% | — |
 | Gemini 3 Pro | 27.0% | — |
 | **TheoremSearch** (Qwen3-8B, 9.2M) | **45.0%** | **56.8%** |
-| mathlas — full-110 (coverage-limited, **the baseline floor**) | 10.0% | 13.6% |
-| **mathlas — reachable n=15, hybrid** | **80.0%** | **100.0%** |
-| mathlas — reachable n=15, dense / BM25 only | 86.7% / 46.7% | 100.0% / 60.0% |
+| mathlas — full-110 (coverage-limited, **the baseline floor**) | 10.0% | 11.8% (was 13.6% @1.34M) |
+| **mathlas — reachable n=15, hybrid** | **73.3%** (was 80.0%) | **86.7%** (was 100.0%) |
+| mathlas — reachable n=15, dense / BM25 only | 86.7% / 46.7% | 86.7% / 60.0% |
 
 (Full breakdown + the coverage explanation: [`docs/02_eval_vs_theoremsearch.md`](docs/02_eval_vs_theoremsearch.md).)
 
 **Honest reading:** only 15 of the 110 test targets are in the permissive corpus
 (the other 95 are non-permissive arXiv, unreachable for *any* open system); the
-full-110 number (10.0 / 13.6%) is bounded by licensing, not retrieval — we hit all 15
-papers we could. **§3c shows the self-augmenting loop repairing exactly this gap to
-59.1 / 70.0%, beating every baseline.** On the fair reachable subset we match/exceed TheoremSearch, **but
-n=15 is small** (1 query = 6.7 pts) so this is directional; 15/15 paper-level is the
-cleanest single number. The ablation shows the **Qwen3-8B dense channel is the
+full-110 number (10.0 / 11.8%) is bounded by licensing, not retrieval — we hit 13 of
+the 15 papers we could. **Growing the index 1.34M → 3.68M slightly HURT this small
+benchmark**: the 2.34M added Dolma distractors crowd 2 reachable papers out of the
+top-20 (paper-level 100.0% → 86.7%) — the coverage/crowding trade, reported as is.
+**§3c shows the self-augmenting loop repairing the coverage gap and beating every
+baseline.** On the fair reachable subset we still clearly exceed TheoremSearch, **but
+n=15 is small** (1 query = 6.7 pts) so this is directional. The ablation shows the **Qwen3-8B dense channel is the
 workhorse**; BM25 fusion did *not* beat dense on this (conceptual-AG) query set. Our
 retrieval is therefore **on-par** with the SOTA open tool — the differentiation is the
 *system* (open, MCP-native, + the verification/conjecture tiers above), not a
@@ -213,7 +276,10 @@ whole corpus rather than 110 hand-written queries.)
 
 ### 3c. The self-augmenting loop in action — repairing the withheld-corpus gap to beat everyone
 
-The §3b full-110 floor (10.0 / 13.6%) is bounded by **licensing, not retrieval**:
+**Re-measured 2026-06-10 on the served 3,683,428-doc index** (both stages re-run
+end-to-end with `benchmarks/webaug_110_bench.py`; the original 2026-06-07 run was
+on the 1.34M index). The §3b full-110 floor (10.0 / 11.8%) is bounded by
+**licensing, not retrieval**:
 TheoremSearch open-sourced only ~15% of their 9.2M corpus, so **95 of the 110 target
 papers are non-permissive arXiv they withheld**. mathlas's self-augmenting design
 exists precisely to close that gap *at AI-runtime*. The AI runs the loop: for each
@@ -229,8 +295,16 @@ baseline TheoremSearch reported**:
 | ChatGPT 5.2 w/ Search | 19.8% | — |
 | Gemini 3 Pro | 27.0% | — |
 | **TheoremSearch** (Qwen3-8B, private **9.2M**) | 45.0% | 56.8% |
-| mathlas — baseline (corpus-only, **the coverage floor**) | **10.0%** | **13.6%** |
+| mathlas — baseline (corpus-only, **the coverage floor**) | **10.0%** | **11.8%** (was 13.6% @1.34M) |
 | **mathlas — after the self-augmenting WEB loop** | **59.1% (65/110)** | **70.0% (77/110)** |
+
+**Index-growth effect, stated plainly:** at 3.68M the corpus-only baseline's
+paper-level number got *worse* (13.6% → 11.8%: the 2.34M added Dolma docs crowd 2
+reachable papers out of the top-20 — same effect as §3b), while **the after-loop
+headline reproduced exactly (59.1 / 70.0)**: the web-found findings enter through
+the dense channel at full strength and are not crowded out by the larger corpus.
+An ablation with only the **7 hand-extracted** findings (no programmatic batch)
+scores 16.4 / 18.2% — the 75 programmatic extractions carry the result.
 
 **Honest framing — this is the LOOP's value, not a native-corpus claim.** The 10.0%
 floor exists *because* TheoremSearch withheld 85% of their corpus; the loop (mathlas
@@ -251,7 +325,8 @@ retrieval is only *on par* with TheoremSearch. What this proves is that the
 - Findings persist in `reference/downloads/findings.jsonl`.
 
 Reproduce — `benchmarks/webaug_110_bench.py` (both stages share one loaded index +
-encoder, exactly the live MCP fusion path):
+encoder, exactly the live MCP fusion path; use the **full** 82-finding worklist —
+the un-suffixed worklist is the 7 hand-extracted findings only):
 
 ```bash
 ME=third_party/math_engine
@@ -265,7 +340,7 @@ CUDA_VISIBLE_DEVICES=0 HF_HUB_CACHE=$ME/reference/downloads/hf PYTHONPATH=$ME \
   python3 $ME/benchmarks/webaug_110_bench.py augmented \
   --index $ME/reference/downloads/index_full_dense.npz \
   --test  $ME/reference/theorem-search-dataset/theorems-test.parquet \
-  --worklist $ME/reference/downloads/splits/_findings_worklist.json --device cuda --k 20
+  --worklist $ME/reference/downloads/splits/_findings_worklist_full.json --device cuda --k 20
 ```
 
 ---

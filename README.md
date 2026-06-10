@@ -79,11 +79,13 @@ The discipline is **airtight-or-nothing**: a result is an independently-checkabl
 | Tier | Recovery@known | False-positive | Why it's airtight | Benchmark |
 |---|---|---|---|---|
 | Numeric (`identify_constant`) | 8/8 | 0/3 | independent high-precision re-eval (50–51 digits) | `benchmarks/numeric_bench.py` |
-| Sequence (`identify_sequence`) | 8/8 (all top-1) | 0/3 | exact term-match vs local OEIS (~400k seqs) | `benchmarks/tier_bench.py` |
+| Sequence (`identify_sequence`) | 8/8 (7 top-1) | 0/3 | exact term-match vs local OEIS (~400k seqs) | `benchmarks/tier_bench.py` |
 | Formal (`verify_formal`) | 7/7 verdicts | — | real Lean 4.30 kernel typecheck | `benchmarks/tier_bench.py` |
 | Ramanujan (`conjecture_relation`) | 6/6 | 0/2 | PSLQ + CF, every hit re-verified ≥25 digits | `benchmarks/tier_bench.py` |
 | Applicability moat | 15/15 decomp + 6/6 catch | — | atomic preconditions, misapplication traps | `benchmarks/moat_bench.py` |
 | FunSearch + web-aug | 14/14 | — | sandbox containment (network / timeout / memory) | `benchmarks/tools_bench.py` |
+
+**Agent-in-the-loop, honestly reported (2026-06-10, Claude Fable 5):** the same headless agent given 10 math tasks WITH the live mathlas MCP server as its only tool vs WITHOUT any tools scores **10/10 both ways** — a frontier model passes this set from parametric knowledge alone, and we don't claim otherwise. What the WITH arm changes is the *evidence*: every closed form came back independently re-verified to 50 digits, and the Lean claim was refuted by the **real kernel** instead of asserted (the model chose to call mathlas in 9/10 tasks when available — and tried to reach for blocked tools when not). Full table: [`RESULTS.md` §2c](RESULTS.md). Run: `benchmarks/agent_bench.py`.
 
 **The 3.68M-doc index.** `search_existing_math` is served from a **3,683,428-document** dense index (Qwen3-Embedding-8B, 4096-d): the **1.34M** permissive CC-BY/CC0 TheoremSearch subset + **2.34M** slogan-embedded arXiv-math documents from Dolma, dense + Okapi-BM25 + RRF. Honest headline recall at full 3.68M scale: **R@1 0.614 / R@10 0.832** querying by a document's raw *body* against its slogan-embedded entry — the hard **cross-representation** self-recall regime. (At the earlier 1.635M build, the easier same-representation slogan→slogan self-recall was R@1 0.977 / R@10 0.998 on its 81,833-doc held-out split.)
 
@@ -91,7 +93,7 @@ The discipline is **airtight-or-nothing**: a result is an independently-checkabl
 
 ## The self-augmenting loop — beating TheoremSearch
 
-On TheoremSearch's own **110 human-written queries**, baseline mathlas hits a coverage floor — TheoremSearch withheld 85% of their private 9.2M corpus, so 95 target papers are unreachable for any open system. The AI then runs the loop: for each missing theorem it web-finds the real statement, embeds it with the same Qwen3-Embedding-8B, and `add_finding(dense_vec=…)` fuses it through the dense channel at runtime:
+On TheoremSearch's own **110 human-written queries**, baseline mathlas hits a coverage floor — TheoremSearch withheld 85% of their private 9.2M corpus, so 95 target papers are unreachable for any open system. The AI then runs the loop: for each missing theorem it web-finds the real statement, embeds it with the same Qwen3-Embedding-8B, and `add_finding(dense_vec=…)` fuses it through the dense channel at runtime (re-measured 2026-06-10 on the served 3.68M index — the after-loop headline reproduced exactly; the corpus-only baseline dipped 13.6% → 11.8% paper-level from the added Dolma distractors, reported as is):
 
 | Method | theorem Hit@20 | paper Hit@20 |
 |---|---|---|
@@ -99,10 +101,10 @@ On TheoremSearch's own **110 human-written queries**, baseline mathlas hits a co
 | ChatGPT 5.2 w/ Search | 19.8% | — |
 | Gemini 3 Pro | 27.0% | — |
 | **TheoremSearch** (Qwen3-8B, full private 9.2M) | 45.0% | 56.8% |
-| mathlas — baseline (corpus-only) | 10.0% | 13.6% |
+| mathlas — baseline (corpus-only) | 10.0% | 11.8% |
 | **mathlas — after self-augmenting web loop** | **59.1% (65/110)** | **70.0% (77/110)** |
 
-The 10.0% floor exists *because* TheoremSearch withheld 85% of their corpus — the loop repairs that coverage gap. Reproduce with `benchmarks/webaug_110_bench.py`.
+The 10.0% floor exists *because* TheoremSearch withheld 85% of their corpus — the loop repairs that coverage gap. Reproduce with `benchmarks/webaug_110_bench.py` (use the **full** 82-finding worklist `_findings_worklist_full.json`).
 
 ---
 

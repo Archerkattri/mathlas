@@ -23,13 +23,13 @@ search_existing_math ─▶ mapping_scaffold + applicability_checklist ─▶ (A
    (own index)            (needs↔guarantees, no LLM)                                  (airtight)
 ```
 
-The MCP server exposes **thirteen** AI-callable tools, all NO-LLM, returning JSON:
-the **7 core** (`identify_constant`, `identify_sequence`, `search_existing_math`,
-`verify_numeric`, `verify_formal`, `applicability_checklist`, `mapping_scaffold`) +
-the **6-tool discovery / web-augmentation layer** (`conjecture_relation`,
-`funsearch_evaluate`, `funsearch_register`, `funsearch_status`, `search_directive`,
-`add_finding`). Tool bodies are plain functions (single source of truth); both server
-backends call them.
+The MCP server exposes **twelve** AI-callable tools, all NO-LLM, returning JSON:
+the **8 core** (`identify_constant`, `identify_sequence`, `search_existing_math`,
+`search_formal_math`, `verify_numeric`, `verify_formal`, `applicability_checklist`,
+`mapping_scaffold`) + the **4-tool discovery / web-augmentation layer**
+(`conjecture_relation`, `funsearch` — one tool, `action=evaluate/register/status` —
+`search_directive`, `add_finding`). Tool bodies are plain functions (single source
+of truth); both server backends call them.
 
 ## Modules
 
