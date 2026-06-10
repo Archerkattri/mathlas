@@ -44,6 +44,15 @@ a tiny built-in seed corpus (zero GPU/downloads). Two env vars override:
                         (wins over ``MATHLAS_INDEX``). Accepts 1/true/yes/on.
   * ``MATHLAS_INDEX=/path/index.npz``  serve this specific prebuilt index
                         (errors if missing). Ignored when ``MATHLAS_SEED`` is set.
+  * ``MATHLAS_ENCODER=0.6b``  serve the LAPTOP-TIER index variant built with
+                        Qwen3-Embedding-0.6B (CPU-friendly query encode, ~1.2 GB
+                        encoder, dim 1024): the resolved index path is swapped for
+                        its ``_06b.npz`` sibling (built by scripts/build_06b_index.py;
+                        errors honestly if missing). ``8b``/unset = the default
+                        flagship behaviour, unchanged. Composes with
+                        ``MATHLAS_QUANTIZED`` (the 0.6B sidecars are ~3.8 GB int8 /
+                        ~0.47 GB binary). Recall trade-off vs the 8B encoder is
+                        measured in docs/QUANTIZED_TIER.md.
   * ``MATHLAS_QUANTIZED=int8|binary``  serve the dense channel from the memmapped
                         quantized sidecars (the laptop tier; docs/QUANTIZED_TIER.md).
   * ``MATHLAS_STATEMENT_INDEX=/path/index_full_statement.npz`` (or ``auto``)
@@ -181,6 +190,42 @@ def _seed_forced() -> bool:
     }
 
 
+def _encoder_tier() -> str:
+    """The dense-encoder tier selected by ``MATHLAS_ENCODER``.
+
+    ``"8b"`` (default; also empty/unset) = the flagship Qwen3-Embedding-8B
+    index, behaviour unchanged. ``"0.6b"`` (accepts 0.6B/06b) = the laptop
+    tier: the corpus re-embedded with Qwen3-Embedding-0.6B so the query
+    encoder runs on a laptop CPU. Anything else is a loud error (a typo must
+    never silently serve the wrong embedding space)."""
+    raw = os.environ.get("MATHLAS_ENCODER", "").strip().lower()
+    if raw in ("", "8b"):
+        return "8b"
+    if raw in ("0.6b", "06b"):
+        return "0.6b"
+    raise ValueError(
+        f"MATHLAS_ENCODER must be '8b' or '0.6b', got {raw!r}")
+
+
+def _encoder_index_path(path: str, tier: str) -> str:
+    """Map a resolved index path to the selected encoder tier's artifact.
+
+    The 0.6B tier lives in a DIFFERENT embedding space, so it is a sibling
+    index file (``<stem>_06b.npz``, built once by scripts/build_06b_index.py
+    over the SAME corpus + meta), never a reinterpretation of the 8B matrix."""
+    if tier == "8b":
+        return path
+    if path.endswith("_06b.npz"):       # already the 0.6B artifact
+        return path
+    cand = os.path.splitext(os.fspath(path))[0] + "_06b.npz"
+    if not os.path.exists(cand):
+        raise FileNotFoundError(
+            f"MATHLAS_ENCODER=0.6b but the 0.6B index {cand} does not exist "
+            f"(build it once with scripts/build_06b_index.py, or unset "
+            f"MATHLAS_ENCODER for the default 8B index).")
+    return cand
+
+
 def _resolve_index_path() -> Optional[str]:
     """The prebuilt-index path to serve, or ``None`` (=> built-in seed corpus).
 
@@ -188,9 +233,11 @@ def _resolve_index_path() -> Optional[str]:
     NEVER touches the (multi-GB) prebuilt index — use it for a lightweight cold
     start. Otherwise ``MATHLAS_INDEX`` wins; else the default build location is
     used IF it exists. ``MATHLAS_INDEX`` set but missing is an explicit opt-in
-    error (don't silently fall back and confuse)."""
+    error (don't silently fall back and confuse). ``MATHLAS_ENCODER=0.6b``
+    then swaps the resolved path for its ``_06b.npz`` laptop-tier sibling."""
     if _seed_forced():
         return None
+    tier = _encoder_tier()
     env = os.environ.get("MATHLAS_INDEX")
     if env:
         if not os.path.exists(env):
@@ -198,8 +245,10 @@ def _resolve_index_path() -> Optional[str]:
                 f"MATHLAS_INDEX={env} does not exist (set it to a built "
                 f"index.npz, or unset it to use the seed corpus)."
             )
-        return env
-    return _DEFAULT_INDEX if os.path.exists(_DEFAULT_INDEX) else None
+        return _encoder_index_path(env, tier)
+    if not os.path.exists(_DEFAULT_INDEX):
+        return None
+    return _encoder_index_path(_DEFAULT_INDEX, tier)
 
 
 def _embedder_for_index(index_path: str):
@@ -272,6 +321,12 @@ def _build_retriever(corpus_dir: Optional[str], limit: int):
         # a path, or "auto" to use index_full_statement.npz beside the index.
         stmt_index = os.environ.get("MATHLAS_STATEMENT_INDEX", "").strip() or None
         if stmt_index is not None:
+            if _encoder_tier() != "8b":
+                raise ValueError(
+                    "MATHLAS_STATEMENT_INDEX cannot be combined with "
+                    "MATHLAS_ENCODER=0.6b: the statement channel was embedded "
+                    "with Qwen3-Embedding-8B (a different embedding space and "
+                    "dim); no 0.6B statement channel exists.")
             if stmt_index.lower() == "auto":
                 stmt_index = os.path.join(os.path.dirname(index_path),
                                           "index_full_statement.npz")
@@ -290,11 +345,22 @@ def _build_retriever(corpus_dir: Optional[str], limit: int):
                 "1", "true", "yes", "on"}:
             from .retrieve.rerank import Qwen3Reranker
             reranker = Qwen3Reranker()
+        # The 0.6B laptop-tier sibling serves the SAME corpus + meta as its
+        # base index, so the (encoder-independent) BM25 cache built beside the
+        # base is reused instead of re-tokenizing 3.68M docs into a duplicate
+        # bundle. The cache's own doc-count + meta size/mtime freshness checks
+        # still apply on load.
+        bm25_cache = "auto"
+        if index_path.endswith("_06b.npz"):
+            base_cache = index_path[:-len("_06b.npz")] + ".bm25"
+            if os.path.isdir(base_cache):
+                bm25_cache = base_cache
         retr = HybridRetriever.from_index(
             index_path, embedder=_embedder_for_index(index_path),
             quantized=quantized,
             statement_index=stmt_index,
             reranker=reranker,
+            bm25_cache=bm25_cache,
         )
         _RETRIEVER_CACHE[key] = retr
         return retr
@@ -456,6 +522,10 @@ def tool_search_existing_math(
     return {
         "query": query,
         "corpus": corpus_label,
+        # provenance: which embedding model the served dense channel was built
+        # with (e.g. Qwen3-Embedding-8B flagship vs the 0.6B laptop tier via
+        # MATHLAS_ENCODER=0.6b); None for the seed/dev corpus.
+        "encoder": getattr(retr, "index_model", None),
         "k": int(k),
         "live_findings_merged": n_findings_used,
         "candidates": base[: int(k)],

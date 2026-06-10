@@ -21,6 +21,9 @@ re-measured on the served **3,683,428-doc** index (§3c additionally re-verified
 with an isolated findings store: exactly 82 findings, same 59.1/70.0); §3a0
 dual-channel statement index built over the full corpus and measured (R@1
 0.614 -> 0.965 on the n=3000 proxy; partial lift on the 110 human queries).
+v1.3.0 addition (2026-06-10): the 0.6B end-to-end laptop tier built and
+measured (R@1 0.545 / R@10 0.745 binary+rescore, 0.67 s/query end-to-end on
+4 CPU threads, query encoding included; pytest 120 collected, 0 failures).
 Hardware: single box, CPU tiers; retrieval used 2×GPU for the offline index
 build + 1 GPU for the query encoder._
 
@@ -255,6 +258,37 @@ Recall-lossless (deltas are 1–2 queries at n=3000). Caveat: queries must still
 be embedded by the index's own Qwen3-Embedding-8B — quantization shrinks the
 document side only (full honesty note + mechanism tests:
 `docs/QUANTIZED_TIER.md`, `tests/test_quantized_tier.py`).
+
+**0.6B end-to-end laptop tier (2026-06-10, v1.3.0):** the SAME corpus and
+served representation channel re-embedded with **Qwen3-Embedding-0.6B**
+(1024-d, row-aligned with the served meta; alignment spot-verified at min
+cosine 0.998), so the query encoder itself runs on a laptop CPU
+(`MATHLAS_ENCODER=0.6b`, composes with `MATHLAS_QUANTIZED`). Identical
+n=3000 protocol, query texts re-encoded with the 0.6B model
+(`scripts/build_06b_index.py` + `scripts/eval_06b_tier.py`; results keys
+`q06b_*` in `retrieval_upgrades/results.json`):
+
+| 0.6B dense config | disk | R@1 | R@10 | top-1 = 0.6B fp16 | end-to-end warm |
+|---|---|---|---|---|---|
+| fp16 exact (tier baseline) | 7.54 GB | 0.5437 | 0.7450 | 1.000 | — |
+| int8 dequant dot | 3.77 GB | 0.5443 | 0.7450 | 0.9730 | 6.3 s (4 thr) |
+| binary raw (Hamming only) | 0.47 GB | 0.4990 | 0.6983 | 0.6790 | — |
+| **binary top-1000 → int8 rescore** | **0.47 GB** (+3.77 rescore) | **0.5450** | **0.7450** | 0.9723 | **0.67 s (4 thr) / 0.88 s (2 thr)** |
+
+End-to-end = 0.6B query encode on CPU **+** production quantized search;
+this is the first tier where the latency includes query encoding, because it
+is the first tier whose encoder fits on the target machine (~1.2 GB).
+Honest reading: quantization is again lossless within the tier (rescore
+matches fp16 exact to the third decimal; raw Hamming alone loses 4.5pp R@1
+at 1024 bits, so the rescore is load-bearing), and the encoder downgrade
+costs ~7-9pp recall vs the 8B tier (R@1 0.544 vs 0.614, R@10 0.745 vs
+0.832). Tier ladder on the identical protocol: 0.6B laptop 0.545/0.745 →
+8B quantized 0.614/0.832 → 8B dual-channel 0.965/0.999 (big-box only).
+TheoremSearch-110 corpus-only probe with the 0.6B tier: Hit@20 theorem 8.2%
+(9/110) / paper 10.0% (11/110) vs the 8B tier's 10.0% / 11.8%, both
+licensing-bounded floors (§3b). Latency hardware caveat: threads capped to
+2/4 but cores are server-class (Threadripper PRO 7975WX); a laptop core is
+slower, same order of magnitude. Full tables: `docs/QUANTIZED_TIER.md`.
 
 **Dual-channel statement index (2026-06-10, v1.2, opt-in):** the same
 3,683,428 docs embedded a second time by their cleaned LaTeX **statement**
