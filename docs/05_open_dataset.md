@@ -11,14 +11,18 @@ Okapi-BM25 by Reciprocal Rank Fusion:
 
 | Source | Docs | License | Embedded text |
 |---|---|---|---|
-| TheoremSearch permissive subset | 1,341,083 | CC-BY / CC0 | NL slogan |
-| arXiv-math (Dolma), slogan-embedded | 2,342,345 | permissive arXiv | NL slogan |
+| TheoremSearch permissive subset | 1,341,083 | CC BY-SA 4.0 (dataset card; underlying papers CC BY/CC BY-SA/CC0) | NL slogan |
+| arXiv-math (Dolma), slogan-embedded | 2,342,345 | ODC-BY 1.0 (Dolma); slogans ours, CC BY 4.0 | NL slogan |
 
 (The earlier **1,635,233-doc** build additionally carried smaller Stacks Project
 12,693 + ProofWiki 23,871 slices and only 294,150 Dolma docs; the 2026-06 rebuild
 expanded Dolma ~8× with the slogan-embedding pass below.)
 
-Every source is openly licensed and redistributable. Each document is embedded by its
+Every source is openly licensed and redistributable; the audited per-source
+licensing matrix is in [HF_DATASET_LICENSING.md](HF_DATASET_LICENSING.md), and the
+document corpus (texts + metadata, not the embedding matrices) is published on
+Hugging Face as `Archerkattri/mathlas-corpus` via `scripts/hf_upload_corpus.py`.
+Each document is embedded by its
 natural-language **slogan** — the meaning of the theorem, not its LaTeX — so the whole
 index lives in one consistent slogan-dense space and queries match on concept rather
 than notation.
