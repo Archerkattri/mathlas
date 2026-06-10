@@ -15,15 +15,26 @@ Every hit is returned with ``provenance`` ``external:loogle`` /
 a hit is a mathlib *declaration* (name + type), i.e. formally-stated existing
 math. If a service is down, its block reports ``available: False`` with the real
 error — an honest "service unavailable," never fabricated hits.
+
+A tiny on-disk TTL cache (see ``_cache_store``/``_cache_lookup``) keeps the last
+successful response per (backend, query, k): a fresh hit REFRESHES it, and when a
+service is down (Loogle 502s happen) the cached response is served INSTEAD of
+nothing — clearly labeled (``cached: True``, age in the error text, per-hit
+provenance ``external:<service> (cached, <age> old)``). ``available`` stays
+``False`` on a cached serve: the live service really was unreachable.
 """
 
 from __future__ import annotations
 
+import copy
 import json
+import os
+import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 LOOGLE_URL = "https://loogle.lean-lang.org/json"
 LEANSEARCH_URL = "https://leansearch.net/search"
@@ -32,6 +43,116 @@ DEFAULT_TIMEOUT_S = 15.0
 
 #: Known backends, in the order ``backend="auto"`` queries them.
 BACKENDS = ("loogle", "leansearch")
+
+#: On-disk cache of successful backend responses: 7-day TTL, newest-200 cap.
+#: Best-effort only — any cache I/O failure silently degrades to no-cache.
+CACHE_TTL_S = 7 * 24 * 3600
+CACHE_MAX_ENTRIES = 200
+
+
+def _cache_path() -> Optional[str]:
+    """Cache file path, or None when caching is disabled (``MATHLAS_NO_CACHE``).
+    Default ``~/.cache/mathlas/formal_search_cache.json`` (honours
+    ``XDG_CACHE_HOME``); override the directory with ``MATHLAS_CACHE_DIR``."""
+    if os.environ.get("MATHLAS_NO_CACHE", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        return None
+    root = os.environ.get("MATHLAS_CACHE_DIR") or os.path.join(
+        os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
+        "mathlas",
+    )
+    return os.path.join(root, "formal_search_cache.json")
+
+
+def _cache_read(path: str) -> Dict[str, Any]:
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return {}  # missing/corrupt cache == empty cache
+
+
+def _cache_key(backend: str, query: str, k: int) -> str:
+    return f"{backend}|{int(k)}|{query}"
+
+
+def _cache_store(backend: str, query: str, k: int, block: Dict[str, Any]) -> None:
+    """Persist a SUCCESSFUL backend block (atomic write, newest-200 cap).
+    Best-effort: any failure is swallowed — the cache must never break a search."""
+    path = _cache_path()
+    if not path:
+        return
+    try:
+        data = _cache_read(path)
+        data[_cache_key(backend, query, k)] = {"t": time.time(), "block": block}
+        if len(data) > CACHE_MAX_ENTRIES:  # keep the newest entries only
+            newest = sorted(
+                data.items(), key=lambda kv: kv[1].get("t", 0), reverse=True
+            )[:CACHE_MAX_ENTRIES]
+            data = dict(newest)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        os.replace(tmp, path)
+    except (OSError, TypeError, ValueError):
+        pass
+
+
+def _cache_lookup(
+    backend: str, query: str, k: int
+) -> Optional[Tuple[Dict[str, Any], float]]:
+    """A FRESH (age <= TTL) cached block for this exact request, or None."""
+    path = _cache_path()
+    if not path:
+        return None
+    entry = _cache_read(path).get(_cache_key(backend, query, k))
+    if not isinstance(entry, dict) or not isinstance(entry.get("block"), dict):
+        return None
+    age = time.time() - float(entry.get("t", 0))
+    if age < 0 or age > CACHE_TTL_S:
+        return None
+    return entry["block"], age
+
+
+def _age_str(age_s: float) -> str:
+    if age_s < 3600:
+        return f"{age_s / 60:.0f}m"
+    if age_s < 86400:
+        return f"{age_s / 3600:.1f}h"
+    return f"{age_s / 86400:.1f}d"
+
+
+def _serve_cached(
+    backend: str, query: str, k: int, live_error: str
+) -> Optional[Dict[str, Any]]:
+    """On a live failure, serve the cached block CLEARLY LABELED as cached, or
+    None when nothing fresh is cached. Honesty: ``available`` stays False (the
+    live service really is unreachable); every hit's provenance is suffixed
+    ``(cached, <age> old)``; the error keeps the real network failure."""
+    found = _cache_lookup(backend, query, k)
+    if not found:
+        return None
+    block, age = found
+    block = copy.deepcopy(block)
+    age_s = _age_str(age)
+    for h in block.get("hits") or []:
+        prov = h.get("provenance") or f"external:{backend}"
+        h["provenance"] = f"{prov} (cached, {age_s} old)"
+    block["available"] = False
+    block["cached"] = True
+    block["cache_age_seconds"] = int(age)
+    block["error"] = (
+        f"{live_error} Serving the last successful response from the local "
+        f"cache ({age_s} old) — clearly labeled, refreshed on the next "
+        "successful call."
+    )
+    return block
 
 
 def _http_json(
@@ -71,19 +192,27 @@ def search_loogle(
 
     Returns ``{"backend": "loogle", "available": bool, "hits": [...], ...}``.
     ``available: False`` + ``error`` when the service is unreachable (honest
-    unavailable, no fabricated hits). A Loogle *query-syntax* error comes back
-    with ``available: True`` and the parser message in ``error`` (plus Loogle's
-    ``suggestions`` when it offers any)."""
+    unavailable, no fabricated hits) — unless a fresh (<=7-day) cached response
+    exists for this exact request, which is then served CLEARLY LABELED as
+    cached. A Loogle *query-syntax* error comes back with ``available: True``
+    and the parser message in ``error`` (plus Loogle's ``suggestions`` when it
+    offers any)."""
     url = LOOGLE_URL + "?" + urllib.parse.urlencode({"q": query})
     try:
         raw = _http_json(url, timeout_s=timeout_s)
     except Exception as e:  # network/HTTP/parse — service unavailable, say so.
+        err = (
+            f"Loogle unreachable ({e.__class__.__name__}: {e}). "
+            "Retry later or use backend='leansearch'."
+        )
+        cached = _serve_cached("loogle", query, k, err)
+        if cached is not None:
+            return cached
         return {
             "backend": "loogle",
             "available": False,
             "hits": [],
-            "error": f"Loogle unreachable ({e.__class__.__name__}: {e}). "
-            "Retry later or use backend='leansearch'.",
+            "error": err,
         }
     if not isinstance(raw, dict):
         return {
@@ -117,6 +246,7 @@ def search_loogle(
     }
     if raw.get("suggestions"):
         out["suggestions"] = raw["suggestions"]
+    _cache_store("loogle", query, k, out)  # refresh the cache on success
     return out
 
 
@@ -135,12 +265,18 @@ def search_leansearch(
             timeout_s=timeout_s,
         )
     except Exception as e:
+        err = (
+            f"LeanSearch unreachable ({e.__class__.__name__}: {e}). "
+            "Retry later or use backend='loogle'."
+        )
+        cached = _serve_cached("leansearch", query, k, err)
+        if cached is not None:
+            return cached
         return {
             "backend": "leansearch",
             "available": False,
             "hits": [],
-            "error": f"LeanSearch unreachable ({e.__class__.__name__}: {e}). "
-            "Retry later or use backend='loogle'.",
+            "error": err,
         }
     # Response shape: one list per query, each entry {"result": {...}, "distance": d}.
     rows: List[Any] = []
@@ -170,13 +306,15 @@ def search_leansearch(
                 "provenance": "external:leansearch",
             }
         )
-    return {
+    out = {
         "backend": "leansearch",
         "available": True,
         "hits": hits,
         "count": len(hits),
         "error": None,
     }
+    _cache_store("leansearch", query, k, out)  # refresh the cache on success
+    return out
 
 
 def search_formal_math(
@@ -228,7 +366,10 @@ def search_formal_math(
                 merged.append(h)
     merged = merged[: int(k)]
 
-    unavailable = [b for b in wanted if not blocks[b]["available"]]
+    unavailable = [
+        b for b in wanted if not blocks[b]["available"] and not blocks[b].get("cached")
+    ]
+    from_cache = [b for b in wanted if blocks[b].get("cached")]
     note = (
         "Hits are mathlib DECLARATIONS (name + type) from external public "
         "indexes (Loogle = pattern/type, LeanSearch = natural language), "
@@ -236,6 +377,14 @@ def search_formal_math(
         "existing math — compose with applicability_checklist, and use "
         "verify_formal to kernel-check any Lean snippet you write."
     )
+    if from_cache:
+        note += (
+            " SERVED FROM CACHE: "
+            + ", ".join(from_cache)
+            + " (live service unreachable; these hits are the last successful "
+            "response — age in backends[<name>].cache_age_seconds and in each "
+            "hit's provenance)."
+        )
     if unavailable:
         note += (
             " UNAVAILABLE: "

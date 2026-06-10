@@ -1223,10 +1223,11 @@ _TOOLS: List[Dict[str, Any]] = [
             "Find mathlib DECLARATIONS (name + type) via the public Loogle "
             "(pattern/type queries like '?a * ?b = ?b * ?a') and LeanSearch "
             "(natural-language queries) services — the ONE tool that itself calls "
-            "the web; honest 'service unavailable' if down. Use when you need the "
-            "formal Lean name/type of a result, e.g. before writing a "
-            "verify_formal snippet. Args: query, k (default 10), backend "
-            "('auto'|'loogle'|'leansearch')."
+            "the web; honest 'service unavailable' if down (though a <=7-day-old "
+            "cached response for the same query is then served, clearly labeled "
+            "'cached' with its age). Use when you need the formal Lean name/type "
+            "of a result, e.g. before writing a verify_formal snippet. Args: "
+            "query, k (default 10), backend ('auto'|'loogle'|'leansearch')."
         ),
         "params": {
             "query": {
@@ -1249,7 +1250,10 @@ _TOOLS: List[Dict[str, Any]] = [
                 "backend": {"type": "string"},
                 "backends": {
                     "type": "object",
-                    "description": "per-service block {available, hits, error}",
+                    "description": "per-service block {available, hits, error, "
+                    "cached?, cache_age_seconds?} — cached=true means the live "
+                    "service failed and these hits are the last successful "
+                    "response (clearly labeled)",
                 },
                 "hits": {
                     "type": "array",
