@@ -14,7 +14,8 @@ Tools exposed (12)
   search_existing_math(query, k, corpus_dir?) ranked candidate existing results
   search_formal_math(query, k?, backend?)   mathlib declarations via public Loogle/LeanSearch
   verify_numeric(value, closed_form)        airtight digit-agreement verdict
-  verify_formal(statement, lean?)           REAL Lean kernel typecheck (or honest UNDETERMINED)
+  verify_formal(statement, lean?, proof?)   REAL Lean kernel typecheck; with proof= a full
+                                            PROOF CHECK (VERIFIED_PROOF/REFUTED/UNDETERMINED)
   applicability_checklist(candidate_statement) the result's preconditions, structured
   mapping_scaffold(problem, candidate_statement) the needs<->guarantees questions
   -- discovery + web-augmentation layer (NO LLM; each returns DATA) --
@@ -587,7 +588,9 @@ def tool_verify_numeric(
     }
 
 
-def tool_verify_formal(statement: str, lean: Optional[str] = None) -> Dict[str, Any]:
+def tool_verify_formal(
+    statement: str, lean: Optional[str] = None, proof: Optional[str] = None
+) -> Dict[str, Any]:
     """Formal (Lean) verify: REALLY runs the Lean kernel on a snippet (NO LLM).
 
     If a Lean toolchain is installed and a ``lean`` snippet is given, this runs the
@@ -596,10 +599,82 @@ def tool_verify_formal(statement: str, lean: Optional[str] = None) -> Dict[str, 
     UNDETERMINED verdict — never a fake pass. Honest caveat: a typecheck proves the
     snippet is well-typed and its proof term checks, NOT that the stated theorem is
     the right applicability claim for ``statement`` (typecheck != proves-it-applies;
-    that mapping is the calling AI's job)."""
-    from .verify_apply import verify_formal, find_lean
+    that mapping is the calling AI's job).
+
+    PROOF MODE (``proof`` given): ``statement`` must be the Lean 4 PROPOSITION
+    and ``proof`` the AI-written proof (term or ``by`` tactic block). mathlas
+    builds ``theorem _mathlas_check : <statement> := <proof>`` and kernel-checks
+    it — ``proof_status`` is VERIFIED_PROOF / REFUTED (with the kernel's error
+    verbatim in ``kernel_error``, for the AI's repair loop) / UNDETERMINED
+    (toolchain absent, timeout, or unresolvable import — honest degradation).
+    ``sorry``/``admit`` holes are REJECTED. mathlas never generates proofs; it
+    only checks them (the generator/verifier split is absolute)."""
+    from .verify_apply import (
+        PROOF_REFUTED,
+        PROOF_UNDETERMINED,
+        PROOF_VERIFIED,
+        check_lean_proof,
+        find_lean,
+        verify_formal,
+    )
 
     lean_exe = find_lean()
+    if proof is not None:
+        status, detail, decl = check_lean_proof(statement, proof, lean_exe=lean_exe)
+        out: Dict[str, Any] = {
+            "statement": statement,
+            "mode": "proof_check",
+            "proof_provided": True,
+            "lean_provided": bool(lean),
+            "lean_available": bool(lean_exe),
+            "tier": "formal",
+            "proof_status": status,
+            "typechecks": (
+                None if status == PROOF_UNDETERMINED else status == PROOF_VERIFIED
+            ),
+            "applies": status == PROOF_VERIFIED,
+            "confidence": 1.0 if status == PROOF_VERIFIED else 0.0,
+            "checked": status != PROOF_UNDETERMINED,
+            "stub": status == PROOF_UNDETERMINED,
+            "declaration": decl,
+            "detail": detail,
+            "kernel_error": detail if status == PROOF_REFUTED else None,
+            "failure": (
+                "Lean kernel rejected the proof" if status == PROOF_REFUTED else None
+            ),
+            "note": {
+                PROOF_VERIFIED: (
+                    "REAL Lean kernel check: PROOF VERIFIED — the kernel accepted "
+                    "a complete proof of `statement` as written. Whether that "
+                    "statement is the right formalisation of the informal claim "
+                    "is still the calling AI's responsibility."
+                ),
+                PROOF_REFUTED: (
+                    "REAL Lean kernel check: proof REFUTED. `kernel_error` is the "
+                    "kernel's diagnosis verbatim — repair the proof and re-call "
+                    "(if the error points INSIDE the statement, `statement` is "
+                    "not a valid Lean 4 proposition; fix that first). "
+                    "`declaration` shows exactly what was checked."
+                ),
+                PROOF_UNDETERMINED: (
+                    "UNDETERMINED: no real proof check was possible (see "
+                    "`detail`) — honest degradation, never a fake verdict."
+                ),
+            }[status],
+        }
+        if lean:
+            out["note"] += (
+                " NOTE: `lean` was ignored — proof mode checks "
+                "statement+proof; pass a full snippet via `lean` "
+                "WITHOUT `proof` to typecheck it as-is."
+            )
+        if status == PROOF_UNDETERMINED and not lean_exe:
+            out["remediation"] = (
+                "No Lean toolchain found — install elan "
+                "(`curl -sSf https://elan.lean-lang.org/elan-init.sh | sh`) or set "
+                "the LEAN env var to a `lean` binary, then retry."
+            )
+        return out
     verdict = verify_formal(lean, lean_exe=lean_exe)
     cond = verdict.conditions[0] if verdict.conditions else None
     # "checked" == we actually ran Lean and got a definite True/False typecheck.
@@ -1235,20 +1310,38 @@ _TOOLS: List[Dict[str, Any]] = [
         "title": "Verify formal (real Lean kernel)",
         "fn": tool_verify_formal,
         "description": (
-            "Run the REAL Lean 4 kernel on a Lean snippet and report whether it "
-            "typechecks; honest UNDETERMINED (with a remediation) when no snippet "
-            "or no toolchain. Use to kernel-check a formal claim you wrote — find "
-            "declaration names first with search_formal_math. Args: statement "
-            "(what is being claimed), lean (the Lean 4 snippet — REQUIRED for a "
-            "real check, e.g. 'example : 2 + 2 = 4 := rfl')."
+            "Run the REAL Lean 4 kernel (NO LLM). Two modes: (1) pass `lean` (a "
+            "full snippet, e.g. 'example : 2 + 2 = 4 := rfl') to typecheck it "
+            "as-is; (2) pass `proof` to PROOF-CHECK — `statement` must then be "
+            "the Lean 4 proposition and `proof` YOUR proof (term or 'by ...' "
+            "tactic block); mathlas builds `theorem _mathlas_check : <statement> "
+            ":= <proof>` and the kernel returns proof_status VERIFIED_PROOF / "
+            "REFUTED (kernel_error carries the kernel's exact complaint — use it "
+            "to repair the proof and re-call) / UNDETERMINED (no toolchain / "
+            "timeout / unresolvable import — honest, never fake). sorry/admit "
+            "are REJECTED. mathlas never writes proofs, only checks them. Find "
+            "declaration names first with search_formal_math. Args: statement, "
+            "lean?, proof?."
         ),
         "params": {
-            "statement": {"type": "string", "description": "the claim being checked"},
+            "statement": {
+                "type": "string",
+                "description": "the claim being checked; with `proof` it MUST be "
+                "the Lean 4 proposition to prove, e.g. '∀ n : Nat, n + 0 = n'",
+            },
             "lean": {
                 "type": "string",
-                "description": "Lean 4 snippet to kernel-check, e.g. "
-                '"example : 2 + 2 = 4 := rfl" (omit it and the verdict is an '
-                "honest UNDETERMINED — statement text alone is not checkable)",
+                "description": "Lean 4 snippet to kernel-check as-is, e.g. "
+                '"example : 2 + 2 = 4 := rfl" (omit both this and `proof` and '
+                "the verdict is an honest UNDETERMINED — statement text alone "
+                "is not checkable)",
+            },
+            "proof": {
+                "type": "string",
+                "description": "YOUR Lean 4 proof of `statement` — a term "
+                "('rfl') or tactic block ('by\\n  intro n\\n  rfl'). Checked by "
+                "the real kernel; on REFUTED, repair using `kernel_error` and "
+                "re-call. sorry/admit holes are rejected.",
             },
         },
         "required": ["statement"],
@@ -1256,16 +1349,37 @@ _TOOLS: List[Dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "statement": {"type": "string"},
+                "mode": {
+                    "type": "string",
+                    "description": "'proof_check' iff `proof` was supplied",
+                },
                 "lean_provided": {"type": "boolean"},
+                "proof_provided": {"type": "boolean"},
                 "lean_available": {"type": "boolean"},
                 "tier": {"type": "string"},
+                "proof_status": {
+                    "type": "string",
+                    "enum": ["VERIFIED_PROOF", "REFUTED", "UNDETERMINED"],
+                    "description": "proof mode only — the kernel's verdict on "
+                    "YOUR proof",
+                },
                 "typechecks": {"type": ["boolean", "null"]},
                 "applies": {"type": ["boolean", "null"]},
                 "checked": {
                     "type": "boolean",
                     "description": "true iff the Lean kernel actually ran and gave a verdict",
                 },
+                "declaration": {
+                    "type": "string",
+                    "description": "proof mode only — the exact declaration the "
+                    "kernel checked",
+                },
                 "detail": {"type": "string"},
+                "kernel_error": {
+                    "type": ["string", "null"],
+                    "description": "proof mode, REFUTED only — the kernel's "
+                    "error verbatim; the repair-loop payload",
+                },
                 "remediation": {
                     "type": "string",
                     "description": "present iff not checked — exactly what unblocks a real "
@@ -1605,7 +1719,9 @@ def build_fastmcp():
             "identify_sequence (airtight OEIS exact term-match for integer "
             "sequences), search_existing_math (find existing theorems), "
             "verify_numeric (airtight digit check), verify_formal (REAL Lean "
-            "kernel typecheck, or honest UNDETERMINED), applicability_checklist "
+            "kernel typecheck, or honest UNDETERMINED; pass proof= to "
+            "kernel-check a Lean 4 proof YOU wrote — REFUTED returns the "
+            "kernel's exact error for your repair loop), applicability_checklist "
             "and mapping_scaffold (structured needs<->guarantees scaffolds you "
             "reason over), search_formal_math (mathlib declarations via the "
             "public Loogle/LeanSearch services). PLUS a discovery + "

@@ -143,6 +143,32 @@ _TYPECHECK_CAVEAT = ("Caveat: a Lean typecheck proves the snippet is well-typed 
 #: mathlib) typechecks in well under this; the cap guards against a hang.
 LEAN_TIMEOUT_S = 120
 
+#: Tighter cap for PROOF checking (seconds): an AI-supplied proof can loop the
+#: elaborator (heavy `decide`, runaway recursion), so the proof path gets its own
+#: budget. A timeout is reported as honest UNDETERMINED, never a verdict.
+PROOF_TIMEOUT_S = 60
+
+#: The synthetic declaration name used when elaborating statement+proof.
+PROOF_DECL_NAME = "_mathlas_check"
+
+#: Proof-check statuses (the contract tool_verify_formal exposes).
+PROOF_VERIFIED = "VERIFIED_PROOF"  # kernel accepted the full proof
+PROOF_REFUTED = "REFUTED"  # kernel rejected it (or sorry/admit holes)
+PROOF_UNDETERMINED = "UNDETERMINED"  # could not run a real check (no verdict)
+
+# `sorry`/`admit` leave a HOLE: Lean exits 0 with only a warning ("declaration
+# uses `sorry`"), so a naive exit-code check would call a sorried proof VERIFIED.
+# Belt and braces: reject on a source-token scan (comments stripped first) AND on
+# the kernel's own sorry diagnostics (catches macros that expand to sorryAx).
+_SORRY_TOKEN_RE = re.compile(r"\b(sorry|admit)\b")
+_SORRY_KERNEL_RE = re.compile(r"declaration uses `?sorry`?|\bsorryAx\b")
+# A failed `import` on this (bare, no-mathlib) toolchain is an ENVIRONMENT
+# limitation, not evidence the proof is wrong -> honest UNDETERMINED.
+_MISSING_MODULE_RE = re.compile(
+    r"unknown module prefix|unknown package|bad import|object file .+ does not exist"
+)
+_IMPORT_LINE_RE = re.compile(r"^\s*import\s+\S")
+
 # Cache the resolved Lean executable path (or False if none) so discovery -- which
 # may shell out to ``elan which`` -- runs at most once per process.
 _LEAN_EXE_CACHE: Union[str, bool, None] = None
@@ -259,7 +285,100 @@ def lean_typecheck(lean_snippet: str, *, lean_exe: Optional[str] = None,
                 pass
 
 
+def _strip_lean_comments(src: str) -> str:
+    """Remove Lean line (``-- ...``) and block (``/- ... -/``) comments so the
+    sorry/admit token scan never fires on prose like ``-- no sorry here``."""
+    src = re.sub(r"/-.*?-/", " ", src or "", flags=re.DOTALL)
+    return re.sub(r"--[^\n]*", " ", src)
+
+
+def build_proof_declaration(statement: str, proof: str) -> str:
+    """Elaborate (statement, proof) into one checkable Lean 4 declaration:
+
+        theorem _mathlas_check : <statement> :=
+          <proof>
+
+    ``statement`` must be a Lean 4 PROPOSITION (the type); ``proof`` a term
+    (``rfl``) or tactic block (``by ...``). Leading ``import`` lines in either
+    field are hoisted to the top of the file (mirroring the plain-snippet path,
+    where the snippet IS the file and carries its own imports). The proof is
+    indented uniformly so a multi-line tactic block keeps its relative layout."""
+    imports: List[str] = []
+
+    def hoist(text: str) -> str:
+        body: List[str] = []
+        for ln in (text or "").splitlines():
+            if _IMPORT_LINE_RE.match(ln):
+                imports.append(ln.strip())
+            else:
+                body.append(ln)
+        return "\n".join(body).strip()
+
+    stmt = hoist(statement)
+    prf = hoist(proof)
+    if prf.startswith(":="):  # tolerate an AI passing ':= rfl'
+        prf = prf[2:].strip()
+    # Continuation lines must not start at column 0 (a new Lean command).
+    stmt_block = "\n    ".join(stmt.splitlines())
+    prf_block = "\n".join("  " + ln for ln in prf.splitlines())
+    header = "\n".join(dict.fromkeys(imports))
+    header = header + "\n\n" if header else ""
+    return f"{header}theorem {PROOF_DECL_NAME} : {stmt_block} :=\n{prf_block}\n"
+
+
+def check_lean_proof(statement: str, proof: str, *,
+                     lean_exe: Optional[str] = None,
+                     timeout_s: int = PROOF_TIMEOUT_S) -> Tuple[str, str, str]:
+    """Kernel-check an AI-supplied Lean 4 PROOF of ``statement``. NO LLM.
+
+    mathlas never generates proofs — the generator/verifier split is absolute.
+    The calling AI writes the proof; this builds the full declaration (see
+    :func:`build_proof_declaration`) and runs the real Lean kernel on it.
+
+    Returns ``(status, detail, declaration)`` with status one of
+      * ``VERIFIED_PROOF`` — the kernel accepted the complete proof;
+      * ``REFUTED`` — the kernel rejected it (``detail`` carries the kernel's
+        error message verbatim — feed it back to the AI for a repair loop), or
+        the proof contains ``sorry``/``admit`` holes (rejected outright);
+      * ``UNDETERMINED`` — no real check was possible (no toolchain, timeout,
+        or an import this bare toolchain cannot resolve) — honest, never fake.
+    """
+    decl = build_proof_declaration(statement, proof)
+    if not (statement or "").strip():
+        return (PROOF_UNDETERMINED,
+                "empty statement — pass the Lean 4 proposition to prove "
+                "(e.g. '2 + 2 = 4') as `statement`.", decl)
+    if not (proof or "").strip():
+        return (PROOF_UNDETERMINED,
+                "empty proof — pass the Lean 4 proof term or tactic block "
+                "(e.g. 'rfl' or 'by decide') as `proof`.", decl)
+    m = _SORRY_TOKEN_RE.search(_strip_lean_comments(decl))
+    if m:
+        return (PROOF_REFUTED,
+                f"proof contains `{m.group(1)}` — a proof with holes is not a "
+                "proof. Replace it with the missing steps and re-check.", decl)
+
+    ok, detail = lean_typecheck(decl, lean_exe=lean_exe, timeout_s=timeout_s)
+    if ok is None:  # toolchain absent / timeout -> honest UNDETERMINED
+        return PROOF_UNDETERMINED, detail, decl
+    if _SORRY_KERNEL_RE.search(detail):  # kernel saw a sorryAx, however produced
+        return (PROOF_REFUTED,
+                "kernel reports the declaration uses sorry — a proof with holes "
+                f"is not a proof. Lean output: {detail}", decl)
+    if ok:
+        return PROOF_VERIFIED, detail, decl
+    if _MISSING_MODULE_RE.search(detail):
+        return (PROOF_UNDETERMINED,
+                "an `import` could not be resolved on this bare toolchain (no "
+                "mathlib) — NOT a verdict on the proof. Either restate the "
+                "claim import-free (Lean core) or install the module. Lean "
+                f"output: {detail}", decl)
+    return PROOF_REFUTED, detail, decl
+
+
 def verify_formal(lean_snippet: Optional[str], *,
+                  proof: Optional[str] = None,
+                  statement: Optional[str] = None,
                   lean_exe: Optional[str] = None) -> ApplyVerdict:
     """Kernel-check a Lean snippet (REAL check when Lean is installed; NO LLM).
 
@@ -269,7 +388,44 @@ def verify_formal(lean_snippet: Optional[str], *,
     Lean toolchain is found, it returns an HONEST undetermined verdict -- never a
     fake pass. Remember: a typecheck proves the snippet is well-typed and its proof
     term checks, NOT that the stated theorem is the right applicability claim
-    (typecheck != proves-it-applies; the AI owns that mapping)."""
+    (typecheck != proves-it-applies; the AI owns that mapping).
+
+    PROOF MODE: pass ``proof`` (an AI-written Lean 4 proof term / tactic block)
+    plus ``statement`` (the Lean 4 proposition; falls back to ``lean_snippet``)
+    and the full declaration is kernel-checked via :func:`check_lean_proof` --
+    VERIFIED_PROOF / REFUTED (kernel error in the condition's evidence, for
+    repair loops) / UNDETERMINED. ``sorry``/``admit`` holes are REJECTED.
+    mathlas never writes the proof; it only checks it."""
+    if proof is not None:
+        status, detail, _decl = check_lean_proof(
+            statement if statement is not None else (lean_snippet or ""),
+            proof, lean_exe=lean_exe)
+        cond = Condition(
+            text="Lean kernel accepts the full proof of the statement",
+            satisfied=(None if status == PROOF_UNDETERMINED
+                       else status == PROOF_VERIFIED),
+            evidence=detail)
+        if status == PROOF_VERIFIED:
+            return ApplyVerdict(
+                tier=Tier.FORMAL, applies=True, confidence=1.0,
+                conditions=[cond],
+                note=("REAL Lean kernel check: PROOF VERIFIED -- the kernel "
+                      "accepted a complete proof of the statement as written. "
+                      "Whether that statement is the right formalisation of the "
+                      "informal claim remains the AI's responsibility."))
+        if status == PROOF_REFUTED:
+            return ApplyVerdict(
+                tier=Tier.FORMAL, applies=False, confidence=0.0,
+                conditions=[cond],
+                failure="Lean kernel rejected the proof",
+                note=("REAL Lean kernel check: proof REFUTED. The kernel error "
+                      "in the condition's evidence says exactly why -- repair "
+                      "the proof and re-check."))
+        return ApplyVerdict(
+            tier=Tier.FORMAL, applies=False, confidence=0.0,
+            conditions=[cond], failure=None,
+            note=("UNDETERMINED: could not run a real Lean proof check ("
+                  + detail + "). " + _TYPECHECK_CAVEAT))
     if not lean_snippet:
         exe = lean_exe or find_lean()
         where = f" (Lean available at {exe})" if exe else " (no Lean toolchain found)"
@@ -620,4 +776,7 @@ __all__ = [
     "Tier", "Condition", "ApplyVerdict", "Checklist",
     "verify_numeric_claim", "verify_formal", "applicability_checklist",
     "verify_informal", "find_lean", "lean_typecheck",
+    "check_lean_proof", "build_proof_declaration",
+    "PROOF_VERIFIED", "PROOF_REFUTED", "PROOF_UNDETERMINED",
+    "PROOF_TIMEOUT_S", "PROOF_DECL_NAME",
 ]
