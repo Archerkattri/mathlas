@@ -70,7 +70,7 @@ try:  # single source of truth: the installed package metadata (pyproject)
     try:
         __version__ = _pkg_version("mathlas-mcp")
     except PackageNotFoundError:  # not installed (e.g. raw source tree)
-        __version__ = "1.3.0"
+        __version__ = "1.4.0"
 except ImportError:  # pragma: no cover - importlib.metadata is stdlib >=3.8
     __version__ = "1.3.0"
 __all__ = [
