@@ -9,9 +9,11 @@ mathlas implements the **HARNESS half ONLY — NO LLM**. The CALLING AI writes t
 candidate programs (that is the "language model" in FunSearch); mathlas:
 
   * ``evaluate(program_src, problem_id)`` — runs a candidate in a SANDBOXED
-    subprocess (hard wall-clock timeout, no network, restricted builtins, cwd in
-    a throwaway temp dir) against the registered scorer and returns the numeric
-    score or the error string. Deterministic, no model.
+    subprocess (OS-level isolation: RLIMIT_NOFILE=3 blocks all new fd allocations
+    including sockets and file opens; RLIMIT_NPROC=0 blocks fork; hard CPU/memory
+    rlimits; wall-clock timeout; stripped env; throwaway cwd) against the
+    registered scorer and returns the numeric score or the error string.
+    Deterministic, no model.
   * ``register(program_src, score, problem_id)`` — stores the program in an
     island / MAP-Elites database ON DISK (under
     ``reference/downloads/funsearch/``, gitignored) and reports whether it is a
@@ -225,38 +227,119 @@ def get_problem(problem_id: str) -> Problem:
 
 
 # --------------------------------------------------------------------------- #
-# The SANDBOX: run candidate + scorer in a fresh subprocess, hard timeout, no
-# network, restricted, in a throwaway cwd. We do NOT trust the program (it is
-# AI-written); the subprocess + rlimits + timeout are the containment.
+# The SANDBOX: run candidate + scorer in a fresh subprocess, hard timeout, with
+# OS-level resource limits in a throwaway cwd. We do NOT trust the program (it
+# is AI-written); the containment layers are:
+#
+#   1. Process isolation — a fresh ``python -I -S`` child; parent is unaffected
+#      regardless of what the child does.
+#   2. RLIMIT_NOFILE=3 — after Python initialises and all needed stdlib modules
+#      are loaded into sys.modules, we close every fd above 2 (stdin/stdout/
+#      stderr) and cap the file-descriptor table at 3. This blocks at the OS
+#      level: socket() (network), open() (filesystem reads/writes), and dynamic
+#      library loads (numpy, ctypes, etc.) all require a new fd and fail with
+#      EMFILE. This is NOT a monkey-patch; it is an OS-enforced hard limit.
+#   3. RLIMIT_NPROC=0 — blocks os.fork() at the kernel level, so subprocess,
+#      multiprocessing, and os.system() cannot spawn child processes.
+#   4. RLIMIT_CPU — hard CPU-second budget; excess use triggers SIGXCPU.
+#   5. RLIMIT_AS — address-space cap; prevents unbounded memory allocation.
+#   6. Stripped environment — child inherits only PATH + tuning vars; no tokens,
+#      credentials, or proxy settings leak through.
+#   7. Wall-clock timeout (subprocess.run timeout) — primary guard, catches
+#      cases where SIGXCPU is masked or the CPU limit is generous.
+#
+# What this sandbox does NOT prevent (be honest):
+#   - Code that uses only already-loaded stdlib modules (itertools, math, json,
+#     random, etc. listed in _SANDBOX_PREIMPORTS) can still run freely — that is
+#     intentional; the scorers need them.
+#   - CPU-bound infinite loops in pure Python: killed only by RLIMIT_CPU /
+#     the wall-clock timeout, not instantaneously.
+#   - Memory consumption up to RLIMIT_AS before the kill.
+#   - Exfiltration via stdout (the parent only reads the __FUNSEARCH_RESULT__
+#     line, but the child can write arbitrary data that is captured and discarded
+#     by capture_output=True — no network path, so this is contained).
+#   - On systems where RLIMIT_NPROC enforcement is per-UID and the UID already
+#     has many processes, the fork block may not engage. The RLIMIT_NOFILE=3
+#     guard remains effective independently.
+#
+# This replaces the previous socket monkey-patch, which was bypassable by
+# importing the underlying C extension directly. The new approach enforces
+# isolation at the OS syscall level via the Linux rlimit interface.
 # --------------------------------------------------------------------------- #
-# A tiny preamble executed before the candidate: drops network, caps memory/CPU
-# where the platform supports it, and runs everything in the temp cwd. It is
-# defence-in-depth, not a perfect jail — keep the timeout the primary guard.
+
+# Stdlib modules pre-imported inside the child before fd lockdown.
+# Anything listed here is usable by candidate programs after lockdown.
+# Extend this list conservatively — every addition is a capability grant.
+_SANDBOX_PREIMPORTS = (
+    "resource", "os", "sys", "gc",
+    "json", "math", "itertools", "random", "functools", "collections",
+    "operator", "heapq", "bisect", "copy", "re", "string", "io",
+    "struct", "array", "textwrap", "typing", "dataclasses", "abc",
+    "hashlib", "enum", "fractions", "decimal", "statistics",
+    # socket is pre-imported so the module object exists in sys.modules, but
+    # socket() calls are still blocked because they allocate a new fd.
+    "socket",
+)
+
+# The preamble is injected at the top of every child script.
+# It runs BEFORE the candidate's code and BEFORE the scorer.
 _SANDBOX_PREAMBLE = r'''
-import builtins, os, sys
-# ---- block network: stub out the socket module so no candidate can phone home.
-try:
-    import socket as _socket
-    def _no_net(*a, **k):
-        raise OSError("network disabled in funsearch sandbox")
-    _socket.socket = _no_net
-    _socket.create_connection = _no_net
-    if hasattr(_socket, "create_server"):
-        _socket.create_server = _no_net
-except Exception:
-    pass
-# ---- resource limits (POSIX only): CPU seconds + address space + no new files.
-try:
-    import resource
-    _cpu = int(os.environ.get("FUNSEARCH_CPU_SECONDS", "8"))
-    resource.setrlimit(resource.RLIMIT_CPU, (_cpu, _cpu))
-    _mem = int(os.environ.get("FUNSEARCH_MEM_BYTES", str(1024 * 1024 * 1024)))
+import resource as _r, os as _os, sys as _sys, gc as _gc
+# ---- Phase 1: pre-import all stdlib modules the candidate / scorer may need.
+# Must happen BEFORE fd lockdown because importing a module opens its .pyc file.
+_PREIMPORTS = (
+    "json", "math", "itertools", "random", "functools", "collections",
+    "operator", "heapq", "bisect", "copy", "re", "string", "io",
+    "struct", "array", "textwrap", "typing", "dataclasses", "abc",
+    "hashlib", "enum", "fractions", "decimal", "statistics", "socket",
+)
+for _mod in _PREIMPORTS:
     try:
-        resource.setrlimit(resource.RLIMIT_AS, (_mem, _mem))
-    except (ValueError, OSError):
+        __import__(_mod)
+    except Exception:
         pass
+del _PREIMPORTS
+_gc.collect()
+
+# ---- Phase 2: close every fd above 2 (stdin/stdout/stderr).
+# This cleans up any stray fds (e.g. the dirfd opened by listdir itself).
+try:
+    _open_fds = [int(_f) for _f in _os.listdir("/proc/self/fd") if int(_f) > 2]
+    for _fd in sorted(_open_fds, reverse=True):
+        try:
+            _os.close(_fd)
+        except OSError:
+            pass
+    del _open_fds
 except Exception:
     pass
+
+# ---- Phase 3: set OS-level resource limits. All errors are silently ignored
+# so the sandbox degrades gracefully on non-Linux or restricted environments.
+try:
+    _cpu = int(_os.environ.get("FUNSEARCH_CPU_SECONDS", "8"))
+    _r.setrlimit(_r.RLIMIT_CPU, (_cpu, _cpu))
+except Exception:
+    pass
+try:
+    _mem = int(_os.environ.get("FUNSEARCH_MEM_BYTES", str(1024 * 1024 * 1024)))
+    _r.setrlimit(_r.RLIMIT_AS, (_mem, _mem))
+except Exception:
+    pass
+try:
+    # RLIMIT_NPROC=0: no new processes may be forked (blocks subprocess, os.fork).
+    _r.setrlimit(_r.RLIMIT_NPROC, (0, 0))
+except Exception:
+    pass
+try:
+    # RLIMIT_NOFILE=3: only fds 0/1/2 (stdin/stdout/stderr) remain usable.
+    # Any syscall that allocates a new fd (socket, open, pipe, accept, ...) will
+    # fail with EMFILE. This is the primary network + filesystem isolation layer.
+    _r.setrlimit(_r.RLIMIT_NOFILE, (3, 3))
+except Exception:
+    pass
+del _r, _gc
+# _os and _sys intentionally left for candidate/scorer use (os.path, sys.exit, ...)
 '''
 
 
@@ -314,10 +397,23 @@ def evaluate(program_src: str, problem_id: str,
     """Run ``program_src`` against ``problem_id``'s scorer in a sandboxed
     subprocess and return its score (or the error). NO LLM. Deterministic.
 
-    Containment: a fresh ``python -I`` (isolated) subprocess with a hard
-    wall-clock ``timeout_s``, network stubbed out, POSIX CPU/memory rlimits, and
-    cwd in a throwaway temp dir. The candidate is AI-written and NOT trusted; the
-    timeout is the primary guard, the rest is defence-in-depth.
+    Containment (OS-enforced, not monkey-patched):
+      - Process isolation: a fresh ``python -I -S`` child with a stripped
+        environment (no credentials/tokens can leak).
+      - RLIMIT_NOFILE=3: after Python initialises and all needed stdlib modules
+        are pre-loaded, the fd table is capped at stdin/stdout/stderr only.
+        Any syscall allocating a new fd — socket(), open(), pipe() — fails with
+        EMFILE at the OS level. Network access and filesystem reads/writes are
+        both blocked by this single limit.
+      - RLIMIT_NPROC=0: fork() is blocked; subprocess, multiprocessing, and
+        os.system() cannot spawn child processes.
+      - RLIMIT_CPU: hard CPU-second budget; excess triggers SIGXCPU.
+      - RLIMIT_AS: address-space cap against memory bombs.
+      - Wall-clock timeout (``timeout_s``): primary guard for infinite loops.
+      - Throwaway cwd in a temp dir that is deleted after the run.
+
+    The candidate is AI-written and NOT trusted. See the module-level sandbox
+    comment for a full list of what is and is not prevented.
     """
     prob = get_problem(problem_id)
     runner = _runner_src(program_src, prob.scorer_src, params or {})
