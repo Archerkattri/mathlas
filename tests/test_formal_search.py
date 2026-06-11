@@ -340,6 +340,27 @@ def test_server_tools_list_has_title_and_output_schema():
     ]
 
 
+def test_server_tools_list_carries_behaviour_annotations():
+    """Every tool declares MCP ToolAnnotations, and the mutating tools are
+    correctly flagged non-read-only so clients can gate them."""
+    from mathlas.server import _dispatch
+
+    listed = _dispatch("tools/list", {})["tools"]
+    by_name = {t["name"]: t for t in listed}
+    # All 12 carry annotations.
+    assert all("annotations" in t for t in listed)
+    # The two state-mutating tools are NOT read-only; everything else is.
+    mutating = {"add_finding", "funsearch"}
+    for name, t in by_name.items():
+        ro = t["annotations"]["readOnlyHint"]
+        assert ro is (name not in mutating), f"{name} readOnlyHint wrong"
+    # Only the formal-search tool reaches the open web.
+    assert by_name["search_formal_math"]["annotations"]["openWorldHint"] is True
+    assert by_name["verify_numeric"]["annotations"]["openWorldHint"] is False
+    # Mutating-but-additive: destructiveHint explicitly false.
+    assert by_name["add_finding"]["annotations"]["destructiveHint"] is False
+
+
 # ---- OPT-IN live test (MATHLAS_LIVE=1) ----------------------------------------
 
 

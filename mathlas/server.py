@@ -1857,6 +1857,44 @@ _FUNSEARCH_ALIASES: Dict[str, str] = {
 }
 
 
+#: MCP tool behaviour hints (spec ToolAnnotations). Clients use these for
+#: trust/safety — a read-only, closed-world tool can be auto-approved, while a
+#: state-mutating one (add_finding, funsearch) is surfaced for confirmation.
+#: Defaults per spec (readOnly false, destructive true, idempotent false,
+#: openWorld true) are wrong for almost every mathlas tool, so each is explicit.
+#: Ten tools are pure read-only functions of their input; only `search_formal_math`
+#: reaches the open web (Loogle/LeanSearch); only `add_finding` and `funsearch`
+#: mutate server-side state (the live index / the program store).
+_RO_LOCAL = {"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False}
+_TOOL_ANNOTATIONS: Dict[str, Dict[str, bool]] = {
+    "identify_constant": _RO_LOCAL,
+    "identify_sequence": _RO_LOCAL,
+    "search_existing_math": _RO_LOCAL,
+    "verify_numeric": _RO_LOCAL,
+    "verify_formal": _RO_LOCAL,
+    "applicability_checklist": _RO_LOCAL,
+    "mapping_scaffold": _RO_LOCAL,
+    "conjecture_relation": _RO_LOCAL,
+    "search_directive": _RO_LOCAL,
+    # read-only, but calls out to public Loogle / LeanSearch services
+    "search_formal_math": {"readOnlyHint": True, "idempotentHint": True, "openWorldHint": True},
+    # mutates the live index (additive, never destructive; each call adds state)
+    "add_finding": {
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": False,
+    },
+    # registers/evaluates programs in the sandboxed store (mutating, non-idempotent)
+    "funsearch": {
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": False,
+    },
+}
+
+
 def tool_names() -> List[str]:
     """Names of the exposed MCP tools (handy for tests / introspection)."""
     return [t["name"] for t in _TOOLS]
@@ -1904,10 +1942,17 @@ def build_fastmcp():
             "name": spec["name"],
             "description": (spec["description"] or "").strip(),
         }
+        annotations = _TOOL_ANNOTATIONS.get(spec["name"])
+        # `title` (SDK >= 1.8) and `annotations` (SDK >= 1.9) are passed when the
+        # installed SDK supports them; older SDKs raise TypeError, so degrade in
+        # two steps rather than dropping both at once.
         try:
-            mcp.tool(title=spec.get("title"), **kwargs)(spec["fn"])
-        except TypeError:  # older SDK without `title`
-            mcp.tool(**kwargs)(spec["fn"])
+            mcp.tool(title=spec.get("title"), annotations=annotations, **kwargs)(spec["fn"])
+        except TypeError:
+            try:
+                mcp.tool(title=spec.get("title"), **kwargs)(spec["fn"])
+            except TypeError:  # older SDK without `title`
+                mcp.tool(**kwargs)(spec["fn"])
     return mcp
 
 
@@ -1974,6 +2019,9 @@ def _dispatch(method: str, params: Dict[str, Any]) -> Any:
             }
             if s.get("output"):  # MCP spec 2025-06-18 structured output
                 t["outputSchema"] = s["output"]
+            ann = _TOOL_ANNOTATIONS.get(s["name"])
+            if ann:  # MCP ToolAnnotations behaviour hints (trust/safety)
+                t["annotations"] = ann
             tools.append(t)
         return {"tools": tools}
     if method == "tools/call":
