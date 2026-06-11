@@ -26,3 +26,7 @@ venv/
 .ipynb_checkpoints/
 logs/
 paper/
+
+# MCP registry publisher binary + creds (never commit)
+mcp-publisher
+.mcpregistry_*
