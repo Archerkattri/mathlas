@@ -5,6 +5,7 @@ All notable changes, per version. Auto-generated from git tags by
 
 ## Unreleased
 
+- docs: add per-version CHANGELOG (2bfc52e)
 - Bump server.json to 1.4.0 for MCP registry re-publish (49b328d)
 
 ## v1.4.0 — 2026-06-11
