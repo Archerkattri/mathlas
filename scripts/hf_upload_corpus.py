@@ -79,7 +79,7 @@ EXPECTED_COUNTS = {"theoremsearch": 1_341_083, "dolma": 2_342_345}
 #: serving flags are out of scope for the document corpus).
 FINDINGS_STRIP = ("dense", "dense_vec")
 
-ZENODO_DOI = "10.5281/zenodo.20618603"
+ZENODO_DOI = "10.5281/zenodo.20634787"
 
 # ---------------------------------------------------------------------------
 # Schemas
