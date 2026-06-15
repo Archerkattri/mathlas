@@ -18,7 +18,7 @@ PAPERS_FILE = REPO_ROOT / "reference" / "downloads" / "datasets" / "test_targets
 HEADERS = {
     "User-Agent": (
         "mathlas-benchmark/1.0 (research; github.com/Archerkattri/mathlas; "
-        "contact: kattri@snu.ac.kr)"
+        "contact: krishiattriwork@gmail.com)"
     )
 }
 SLEEP = 5.0

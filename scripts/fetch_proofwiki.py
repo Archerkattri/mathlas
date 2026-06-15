@@ -29,7 +29,7 @@ BASE_URL = "https://proofwiki.org/w/api.php"
 HEADERS = {
     "User-Agent": (
         "mathlas-benchmark/1.0 (research; github.com/Archerkattri/mathlas; "
-        "contact: kattri@snu.ac.kr)"
+        "contact: krishiattriwork@gmail.com)"
     )
 }
 

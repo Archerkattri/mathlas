@@ -37,7 +37,7 @@ OUT_PAPERS = OUT_DIR / "papers.jsonl"
 HEADERS = {
     "User-Agent": (
         "mathlas-benchmark/1.0 (research; github.com/Archerkattri/mathlas; "
-        "contact: kattri@snu.ac.kr)"
+        "contact: krishiattriwork@gmail.com)"
     )
 }
 
