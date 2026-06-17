@@ -9,7 +9,7 @@
 [![Glama score](https://glama.ai/mcp/servers/Archerkattri/mathlas/badges/score.svg)](https://glama.ai/mcp/servers/Archerkattri/mathlas)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](pyproject.toml)
-[![Dataset](https://img.shields.io/badge/HuggingFace-mathlas--corpus-yellow)](https://huggingface.co/datasets/kattri15/mathlas-corpus)
+[![HF dataset](https://img.shields.io/badge/HF%20dataset-mathlas--corpus-yellow)](https://huggingface.co/datasets/kattri15/mathlas-corpus)
 
 > **An airtight-math tool an AI *uses* — no LLM, no API key, free.** Plug it into
 > Claude Code, Cursor, or any MCP client. The **AI is the brain**; mathlas is the
