@@ -39,7 +39,7 @@ honest "nothing"). Run: `PYTHONPATH=. python3 benchmarks/{numeric,tier}_bench.py
 |---|---|---|---|---|
 | **Numeric** | `identify_constant` | **8/8 (100%)** | **0/3 (0%)** | independent high-precision re-eval (50–51 digits agreed) |
 | **Sequence** | `identify_sequence` | **8/8 (100%)** (7 top-1, Fibonacci top-2) | **0/3 (0%)** | exact contiguous term-match vs local OEIS (~400k seqs) |
-| **Formal** | `verify_formal` | **7/7 correct verdicts** | — | **real Lean 4.30 kernel** typecheck (4 true accepted, 3 false rejected) |
+| **Formal** | `verify_formal` | **7/7 correct verdicts** | — | **real Lean 4.31.0 kernel** typecheck (4 true accepted, 3 false rejected) |
 | **Formal (proof check)** | `verify_formal(…, proof=)` | **3/3 correct proofs VERIFIED** | **0 fake passes** (wrong proof REFUTED with the kernel's error; `sorry`/`admit` REJECTED) | the **real kernel checks the full declaration** `theorem _mathlas_check : <statement> := <proof>`; toolchain-absent/timeout/missing-import ⇒ honest UNDETERMINED |
 | **Ramanujan** | `conjecture_relation` | **6/6 (100%)** | **0/2 (0%)** | PSLQ + CF, every hit re-verified to ≥25 digits |
 
@@ -56,7 +56,7 @@ Detail:
   actually ran and reported errors).
 - **Formal (proof check)** — `verify_formal` also kernel-checks an **AI-supplied Lean 4
   proof** of a statement (mathlas never generates proofs — generator/verifier split).
-  Pinned by `tests/test_proof_check.py` (20 tests vs the real Lean 4.30 kernel):
+  Pinned by `tests/test_proof_check.py` (20 tests vs the real Lean 4.31.0 kernel):
   correct proofs verified (`rfl` term, a multi-line tactic block, `by decide`);
   a wrong proof (`2+2=5 := rfl`) **REFUTED with the kernel's error verbatim** in
   `kernel_error` — the agent's repair-loop payload; `sorry`/`admit` **REJECTED**
@@ -163,7 +163,7 @@ deterministic computation with no LLM in the loop, recorded next to the task
 definitions in `benchmarks/agent_bench.py`: mpmath at 60-80 dps for the
 constants, `mpmath.pslq` for the engineered near-identities, exact term-match
 uniqueness against the local OEIS `stripped.gz` for the sequences, and the real
-Lean 4.30.0 kernel for the proof pair.
+Lean 4.31.0 kernel for the proof pair.
 
 | Hard task (deterministic ground truth) | WITH | WITHOUT |
 |---|---|---|

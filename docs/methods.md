@@ -124,7 +124,7 @@ of truth); both server backends call them.
   from `https://oeis.org/` into `reference/downloads/oeis/` (override with
   `MATHLAS_OEIS_DIR`). Absent → honest "data not available", never a fake match.
 - **Lean toolchain** (for a real `verify_formal` kernel check): install elan + a
-  recent Lean (e.g. 4.30) under `reference/downloads/elan` (see the README one-liner;
+  recent Lean (e.g. 4.31.0) under `reference/downloads/elan` (see the README one-liner;
   a bare-snippet check, no mathlib). Absent → honest UNDETERMINED.
 - **Full index** (`scripts/build_index_mp.py`, offline multi-GPU): builds the
   Qwen3-Embedding index over the permissive theorem corpus; the served `index.npz` +

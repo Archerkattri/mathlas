@@ -59,7 +59,10 @@ a tiny built-in seed corpus (zero GPU/downloads). Two env vars override:
                         opt-in second dense channel: the corpus embedded by its
                         cleaned statement text, folded in by per-doc max-sim.
                         Roughly doubles resident RAM; never auto-detected.
-  * ``MATHLAS_RERANK=1``  opt-in Qwen3-Reranker-0.6B cross-encoder blend stage.
+  * ``MATHLAS_RERANK=1``  opt-in cross-encoder rerank blend stage.
+  * ``MATHLAS_RERANK_MODEL`` picks the rerank backend when ``MATHLAS_RERANK`` is
+                        on: ``qwen3`` (default, Qwen3-Reranker-0.6B) or
+                        ``jina-v3`` (jinaai/jina-reranker-v3); a typo raises.
 
 Implementation: uses the official ``mcp`` Python SDK (FastMCP) if installed;
 otherwise falls back to a dependency-free stdio JSON-RPC MCP server implementing
@@ -343,8 +346,10 @@ def _build_retriever(corpus_dir: Optional[str], limit: int):
         reranker = None
         if os.environ.get("MATHLAS_RERANK", "").strip().lower() in {
                 "1", "true", "yes", "on"}:
-            from .retrieve.rerank import Qwen3Reranker
-            reranker = Qwen3Reranker()
+            # MATHLAS_RERANK_MODEL selects the backend: "qwen3" (default,
+            # unchanged) or "jina-v3" (jinaai/jina-reranker-v3). A typo raises.
+            from .retrieve.rerank import make_reranker
+            reranker = make_reranker()
         # The 0.6B laptop-tier sibling serves the SAME corpus + meta as its
         # base index, so the (encoder-independent) BM25 cache built beside the
         # base is reused instead of re-tokenizing 3.68M docs into a duplicate

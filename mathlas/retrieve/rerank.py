@@ -1,4 +1,4 @@
-"""Cross-encoder reranking of retrieval candidates (Qwen3-Reranker).
+"""Cross-encoder reranking of retrieval candidates (Qwen3-Reranker / jina-v3).
 
 The hybrid retriever's two first-stage channels (dense bi-encoder + BM25) score
 query and document INDEPENDENTLY -- neither ever reads the query and a candidate
@@ -31,6 +31,7 @@ pretend-rerank).
 """
 from __future__ import annotations
 
+import os
 from abc import ABC, abstractmethod
 from typing import List, Optional, Sequence
 
@@ -164,6 +165,106 @@ class Qwen3Reranker(Reranker):
         return out
 
 
+class JinaRerankerV3(Reranker):
+    """``jinaai/jina-reranker-v3`` reranker (lazy-loaded, opt-in alternative tier).
+
+    jina-reranker-v3 (arXiv:2509.25085) is a 0.6B "last but not late" listwise
+    reranker that leads BEIR at the 0.6B scale; we expose it as a drop-in
+    alternative to :class:`Qwen3Reranker` selected by ``MATHLAS_RERANK_MODEL=
+    jina-v3``. Its published ``transformers`` API is a single ``AutoModel``
+    (``trust_remote_code=True``) with a ``model.rerank(query, documents)`` method
+    that returns ``[{index, relevance_score, ...}, ...]`` sorted by score; we map
+    those scores back to the CALLER'S input order and return a
+    ``(len(docs),)`` float32 array, so ``HybridRetriever._maybe_rerank`` blends
+    them exactly as it does the Qwen scores (no interface change).
+
+    Same honesty contract as :class:`Qwen3Reranker`: nothing heavy loads until
+    the first ``.score()``; if torch/transformers are missing it raises
+    ``ImportError`` and if the weights are absent (offline, no HF cache) the
+    underlying ``from_pretrained`` raises ``OSError`` -- either way
+    ``HybridRetriever`` catches it, says so on stderr, and serves the un-reranked
+    fusion (never a silent pretend-rerank). We do NOT ship the weights or a
+    benchmark number for this tier; it is wiring for users who already have (or
+    want) the jina model.
+    """
+
+    def __init__(self, model: str = "jinaai/jina-reranker-v3",
+                 device: Optional[str] = None, batch_size: int = 64) -> None:
+        self.model_name = model
+        self.device = device
+        #: jina-reranker-v3 processes up to 64 documents per rerank() call.
+        self.batch_size = int(batch_size)
+        self._model = None  # lazy: nothing heavy happens until first .score()
+
+    def _ensure_loaded(self) -> None:
+        if self._model is not None:
+            return
+        try:
+            import torch  # noqa: F401
+            from transformers import AutoModel
+        except ImportError as e:  # pragma: no cover - optional heavy dep
+            raise ImportError(
+                "JinaRerankerV3 needs torch + transformers "
+                "(pip install 'mathlas[embed]'); without them reranking is "
+                "unavailable and HybridRetriever serves the un-reranked fusion."
+            ) from e
+        # trust_remote_code: jina ships the rerank() head as repo code (documented
+        # requirement). from_pretrained raises OSError if the weights are absent.
+        model = AutoModel.from_pretrained(
+            self.model_name, dtype="auto", trust_remote_code=True)
+        import torch
+        dev = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
+        try:
+            model = model.to(dev)
+        except Exception:  # pragma: no cover - some remote heads pin their device
+            pass
+        self.device = dev
+        self._model = model.eval()
+
+    def score(self, query: str, docs: Sequence[str]) -> np.ndarray:
+        if not docs:
+            return np.zeros(0, dtype=np.float32)
+        self._ensure_loaded()
+        out = np.zeros(len(docs), dtype=np.float32)
+        for b in range(0, len(docs), self.batch_size):
+            chunk = list(docs[b:b + self.batch_size])
+            # rerank() returns rows sorted by score, each carrying the index INTO
+            # `chunk`; scatter back so `out` stays in the caller's input order.
+            for row in self._model.rerank(query, chunk):
+                idx = int(row["index"])
+                out[b + idx] = float(row["relevance_score"])
+        return out
+
+
+#: env var selecting the rerank backend when ``MATHLAS_RERANK`` is on.
+RERANK_MODEL_ENV = "MATHLAS_RERANK_MODEL"
+
+#: registry of selectable rerank backends. "qwen3" is the default (unchanged
+#: shipped behaviour); "jina-v3" is the opt-in alternative tier.
+_RERANKERS = {
+    "qwen3": Qwen3Reranker,
+    "jina-v3": JinaRerankerV3,
+}
+
+
+def make_reranker(name: Optional[str] = None) -> Reranker:
+    """Construct the rerank backend selected by ``MATHLAS_RERANK_MODEL``.
+
+    ``None``/unset/empty/"qwen3" -> :class:`Qwen3Reranker` (default, unchanged);
+    "jina-v3" -> :class:`JinaRerankerV3`. An unknown value RAISES ``ValueError``
+    (mirroring the ``MATHLAS_ENCODER`` tier: a typo must never silently serve a
+    different reranker). Construction is cheap -- the heavy model load is still
+    deferred to the first ``.score()`` call.
+    """
+    raw = (name if name is not None else os.environ.get(RERANK_MODEL_ENV, ""))
+    key = (raw or "").strip().lower() or "qwen3"
+    if key not in _RERANKERS:
+        raise ValueError(
+            f"{RERANK_MODEL_ENV}={raw!r} is not a known reranker; "
+            f"choose one of {sorted(_RERANKERS)} (default 'qwen3').")
+    return _RERANKERS[key]()
+
+
 def doc_rerank_text(name: Optional[str], slogan: Optional[str],
                     statement: Optional[str], max_chars: int = 4000) -> str:
     """The document text a cross-encoder judges: name + NL slogan + the REAL
@@ -173,4 +274,5 @@ def doc_rerank_text(name: Optional[str], slogan: Optional[str],
     return " -- ".join(parts)[:max_chars]
 
 
-__all__ = ["Reranker", "Qwen3Reranker", "doc_rerank_text"]
+__all__ = ["Reranker", "Qwen3Reranker", "JinaRerankerV3", "make_reranker",
+           "RERANK_MODEL_ENV", "doc_rerank_text"]

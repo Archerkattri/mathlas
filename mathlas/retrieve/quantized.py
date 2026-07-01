@@ -46,6 +46,21 @@ import numpy as np
 _POP16 = np.array([bin(v).count("1") for v in range(1 << 16)], dtype=np.uint8)
 
 
+def _read_array_header(fp, version):
+    """Read an npy array header using only public numpy.lib.format API.
+
+    numpy 2.4 removed the private ``_read_array_header``; the versioned public
+    readers (``read_array_header_1_0`` / ``_2_0``) have been present since numpy
+    1.9, so dispatch on the magic version. Returns ``(shape, fortran, dtype)``.
+    """
+    major, minor = version
+    if (major, minor) == (1, 0):
+        return np.lib.format.read_array_header_1_0(fp)
+    if (major, minor) == (2, 0):
+        return np.lib.format.read_array_header_2_0(fp)
+    raise ValueError(f"unsupported npy format version {major}.{minor}")
+
+
 # --------------------------------------------------------------------- #
 # memmap a .npy member stored INSIDE an .npz (np.savez writes ZIP_STORED,
 # i.e. uncompressed, so the raw array bytes sit contiguously in the file).
@@ -71,7 +86,7 @@ def npz_member_memmap(npz_path: str, member: str = "matrix.npy") -> np.memmap:
         n_name, n_extra = struct.unpack("<HH", hdr[26:30])
         f.seek(info.header_offset + 30 + n_name + n_extra)
         version = np.lib.format.read_magic(f)
-        shape, fortran, dtype = np.lib.format._read_array_header(f, version)
+        shape, fortran, dtype = _read_array_header(f, version)
         data_offset = f.tell()
     if fortran:
         raise ValueError(f"{member!r} is Fortran-ordered; expected C order")

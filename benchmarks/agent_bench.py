@@ -99,7 +99,7 @@ TASKS = [
     #     stripped.gz (A058094 shares its first 8 terms with Catalan
     #     A000108 then diverges 1426!=1430; A302019 shares its first 9
     #     terms with Fibonacci A000045 then diverges 56!=55).
-    #   * lean pair: verdicts from the real Lean 4.30.0 kernel run locally:
+    #   * lean pair: verdicts from the real Lean 4.31.0 kernel run locally:
     #     `n + 0 = n := fun n => rfl` VERIFIED_PROOF (defeq, Nat.add recurses
     #     on its 2nd arg); `n * 1 = n := fun n => rfl` REFUTED (n*1 unfolds
     #     to n*0 + n = 0 + n, which is NOT definitionally n).

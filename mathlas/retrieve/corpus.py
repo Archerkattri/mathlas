@@ -110,7 +110,8 @@ def _coerce_category(v) -> Optional[str]:
 #: math.columbia.edu/tag/...`` for Stacks, a ProofWiki URL, and the literal
 #: ``"arXiv (dolma-v1_7)"`` (plus a ``dolma:`` doc_id prefix) for the web-mined
 #: Dolma docs. Everything else (textbook PDFs etc.) is ``other``.
-KNOWN_SOURCE_KEYS = ("arxiv", "dolma", "stacks", "proofwiki", "other")
+KNOWN_SOURCE_KEYS = ("arxiv", "dolma", "stacks", "proofwiki",
+                     "formal_conjectures", "other")
 
 
 def source_key(doc_id: Optional[str], source: Optional[str]) -> str:
@@ -118,13 +119,19 @@ def source_key(doc_id: Optional[str], source: Optional[str]) -> str:
 
     Order matters: the Dolma docs' ``source`` string *contains* "arXiv"
     ("arXiv (dolma-v1_7)"), so dolma is tested before arxiv. The ``dolma:``
-    doc_id prefix is the strongest signal (every Dolma row carries it).
+    doc_id prefix is the strongest signal (every Dolma row carries it). The
+    DeepMind formal-conjectures corpus carries a ``fc::`` doc_id prefix (and a
+    github source URL) so its Lean statements filter/weight as their own source.
     """
     if (doc_id or "").startswith("dolma:"):
         return "dolma"
+    if (doc_id or "").startswith("fc::"):
+        return "formal_conjectures"
     s = (source or "").lower()
     if "dolma" in s:
         return "dolma"
+    if "formal-conjectures" in s or "formal_conjectures" in s:
+        return "formal_conjectures"
     if "stacks.math" in s:
         return "stacks"
     if "proofwiki" in s:
