@@ -49,7 +49,7 @@ claude mcp add mathlas -- python -m mathlas.server
 
 mathlas now appears as **twelve** tools the agent can call. The server prefers the official `mcp` SDK and **falls back to a dependency-free stdio JSON-RPC server** if `mcp` isn't installed — it always runs. (Cursor / any MCP client: point it at the same `uvx mathlas-mcp` or `python -m mathlas.server` stdio command.)
 
-> **Optional local data (degrades honestly):** `identify_sequence` wants a local OEIS copy; `verify_formal` wants a Lean toolchain. Without them the tools return a clear "data/toolchain not available" — never a fake answer. See [`RESULTS.md`](RESULTS.md) for the one-line setup of each.
+> **Optional local data (degrades honestly):** `identify_sequence` wants a local OEIS copy; `verify_formal` wants a Lean toolchain. Without them the tools return a clear "data/toolchain not available" — never a fake answer. See [`docs/methods.md`](docs/methods.md#data--toolchains-optional-gitignored-removable) for the one-line setup of each.
 
 ---
 

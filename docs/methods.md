@@ -123,9 +123,18 @@ of truth); both server backends call them.
 - **OEIS** (~40 MB, for `identify_sequence`): download `stripped.gz` + `names.gz`
   from `https://oeis.org/` into `reference/downloads/oeis/` (override with
   `MATHLAS_OEIS_DIR`). Absent → honest "data not available", never a fake match.
-- **Lean toolchain** (for a real `verify_formal` kernel check): install elan + a
-  recent Lean (e.g. 4.31.0) under `reference/downloads/elan` (see the README one-liner;
-  a bare-snippet check, no mathlib). Absent → honest UNDETERMINED.
+- **Lean toolchain** (for a real `verify_formal` kernel check): install elan + Lean
+  4.31.0 under `reference/downloads/elan` (a bare-snippet check, no mathlib). Point
+  `ELAN_HOME` at the vendored path so the toolchain lands where `find_lean()` looks,
+  then install the pinned toolchain:
+  ```sh
+  export ELAN_HOME="$PWD/reference/downloads/elan"          # run from the repo root
+  curl -sSf https://elan.lean-lang.org/elan-init.sh | \
+      sh -s -- -y --no-modify-path --default-toolchain leanprover/lean4:v4.31.0
+  "$ELAN_HOME/bin/elan" toolchain install leanprover/lean4:v4.31.0   # actually fetch it
+  ```
+  `find_lean()` then resolves `reference/downloads/elan/toolchains/*/bin/lean`
+  automatically (no `PATH`/env needed at runtime). Absent → honest UNDETERMINED.
 - **Full index** (`scripts/build_index_mp.py`, offline multi-GPU): builds the
   Qwen3-Embedding index over the permissive theorem corpus; the served `index.npz` +
   sidecar meta. `scripts/reindex_findings.py` embeds the web-finding backlog.
