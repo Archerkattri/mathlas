@@ -13,7 +13,7 @@ the tool returns *nothing* rather than a plausible guess (the honesty gate). The
 
 _Last validated: 2026-06-10 (v1.2.0) — full retest: §1 tiers + §2 moat + §2b tools
 all re-run green (numeric 8/8 fp 0/3, sequence 8/8, formal 7/7, ramanujan 6/6 fp
-0/2, moat 15/15+6/6, tools 14/14, pytest 111 passed / 1 skipped opt-in-network);
+0/2, moat 15/15+6/6, tools 14/14, pytest 120 passed / 2 skipped (pyarrow, opt-in-network); Lean-kernel tests run on the installed 4.31.0 toolchain);
 verify_formal proof checking + formal-search cache; quantized laptop tier measured
 CPU-only; §2c agent-in-the-loop with/without measured with **Claude Fable 5** as
 the driving model, expanded to 18 tasks (10 original + 8-task hard set); §3b/§3c TheoremSearch head-to-head + the self-augmenting loop
