@@ -1,10 +1,20 @@
 # Changelog — math_engine
 
-All notable changes, per version. Auto-generated from git tags by
-`third_party/launch_materials/gen_changelogs.sh`; do not edit by hand.
+All notable changes, per version. Historical sections were generated from git
+tags; maintained by hand from v1.4.0 onward (same format: subject + short hash).
 
 ## Unreleased
 
+- docs: refresh RESULTS.md suite count (120 passed / 2 skipped on the Lean 4.31.0 toolchain) (64bbe52)
+- docs: add the verified elan/Lean 4.31.0 setup one-liner (fix dangling ref) (3a828bf)
+- docs(README): note the formal-conjectures corpus size (3,941 statements) (430df57)
+- 2026-07-01 upgrades: jina-reranker-v3 optional reranker tier (`MATHLAS_RERANK_MODEL`), DeepMind formal-conjectures corpus ingestion (3,941 Lean statements + FC100 benchmark subsets), numpy 2.4 quantized-tier fix (suite 111→120 passing), Lean 4.30→4.31.0, README positioning (validated-writeback RAG framing, AlphaProof Nexus context, Matlas disambiguation) (e1869cc)
+- Fix Hugging Face dataset badge (f58b9a7)
+- Document Hugging Face corpus (76bc756)
+- chore(meta): use personal contact email in fetch-script user-agents (3f5f6ee)
+- docs: use the auto-updating GitHub-Zenodo DOI badge (always shows the live latest DOI) (c7e5bf5)
+- docs: cite stable Zenodo concept DOI (was a version DOI that changes per release) (3558013)
+- docs: sort CHANGELOG under version headers (ad308cb)
 - docs: add per-version CHANGELOG (2bfc52e)
 - Bump server.json to 1.4.0 for MCP registry re-publish (49b328d)
 
