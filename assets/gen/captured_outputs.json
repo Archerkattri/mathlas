@@ -1,0 +1,123 @@
+{
+  "provenance": {
+    "lean": "/home/krishi/workspace/brain/workspace/repos/mathlas/reference/downloads/elan/toolchains/leanprover--lean4---v4.31.0/bin/lean",
+    "note": "captured in-process from the real Lean 4.31.0 kernel and PSLQ + independent sympy re-eval — no LLM inside"
+  },
+  "calls": [
+    {
+      "tool": "verify_formal",
+      "args": {
+        "statement": "2 + 2 = 4",
+        "proof": "rfl"
+      },
+      "result": {
+        "statement": "2 + 2 = 4",
+        "mode": "proof_check",
+        "proof_provided": true,
+        "lean_provided": false,
+        "lean_available": true,
+        "tier": "formal",
+        "proof_status": "VERIFIED_PROOF",
+        "typechecks": true,
+        "applies": true,
+        "confidence": 1.0,
+        "checked": true,
+        "stub": false,
+        "declaration": "theorem _mathlas_check : 2 + 2 = 4 :=\n  rfl\n",
+        "detail": "kernel typecheck OK (no diagnostics)",
+        "kernel_error": null,
+        "failure": null,
+        "note": "REAL Lean kernel check: PROOF VERIFIED — the kernel accepted a complete proof of `statement` as written. Whether that statement is the right formalisation of the informal claim is still the calling AI's responsibility."
+      }
+    },
+    {
+      "tool": "verify_formal",
+      "args": {
+        "statement": "2 + 2 = 5",
+        "proof": "rfl"
+      },
+      "result": {
+        "statement": "2 + 2 = 5",
+        "mode": "proof_check",
+        "proof_provided": true,
+        "lean_provided": false,
+        "lean_available": true,
+        "tier": "formal",
+        "proof_status": "REFUTED",
+        "typechecks": false,
+        "applies": false,
+        "confidence": 0.0,
+        "checked": true,
+        "stub": false,
+        "declaration": "theorem _mathlas_check : 2 + 2 = 5 :=\n  rfl\n",
+        "detail": "/tmp/tmppgo18s5h.lean:1:0: error: Not a definitional equality: the left-hand side\n  2 + 2\nis not definitionally equal to the right-hand side\n  5\n/tmp/tmppgo18s5h.lean:2:2: error: Type mismatch\n  rfl\nhas type\n  ?m.16 = ?m.16\nbut is expected to have type\n  2 + 2 = 5",
+        "kernel_error": "/tmp/tmppgo18s5h.lean:1:0: error: Not a definitional equality: the left-hand side\n  2 + 2\nis not definitionally equal to the right-hand side\n  5\n/tmp/tmppgo18s5h.lean:2:2: error: Type mismatch\n  rfl\nhas type\n  ?m.16 = ?m.16\nbut is expected to have type\n  2 + 2 = 5",
+        "failure": "Lean kernel rejected the proof",
+        "note": "REAL Lean kernel check: proof REFUTED. `kernel_error` is the kernel's diagnosis verbatim — repair the proof and re-call (if the error points INSIDE the statement, `statement` is not a valid Lean 4 proposition; fix that first). `declaration` shows exactly what was checked."
+      }
+    },
+    {
+      "tool": "verify_formal",
+      "args": {
+        "statement": "2 + 2 = 4",
+        "proof": "by sorry"
+      },
+      "result": {
+        "statement": "2 + 2 = 4",
+        "mode": "proof_check",
+        "proof_provided": true,
+        "lean_provided": false,
+        "lean_available": true,
+        "tier": "formal",
+        "proof_status": "REFUTED",
+        "typechecks": false,
+        "applies": false,
+        "confidence": 0.0,
+        "checked": true,
+        "stub": false,
+        "declaration": "theorem _mathlas_check : 2 + 2 = 4 :=\n  by sorry\n",
+        "detail": "proof contains `sorry` — a proof with holes is not a proof. Replace it with the missing steps and re-check.",
+        "kernel_error": "proof contains `sorry` — a proof with holes is not a proof. Replace it with the missing steps and re-check.",
+        "failure": "Lean kernel rejected the proof",
+        "note": "REAL Lean kernel check: proof REFUTED. `kernel_error` is the kernel's diagnosis verbatim — repair the proof and re-call (if the error points INSIDE the statement, `statement` is not a valid Lean 4 proposition; fix that first). `declaration` shows exactly what was checked."
+      }
+    },
+    {
+      "tool": "identify_constant",
+      "args": {
+        "value": "1.6449340668482264364724151666460251892189499012068"
+      },
+      "result": {
+        "query": "1.64493406684823",
+        "identified": true,
+        "basis": [
+          "pi",
+          "e",
+          "euler",
+          "catalan",
+          "apery",
+          "log(2)",
+          "log(3)",
+          "sqrt(2)",
+          "sqrt(3)",
+          "sqrt(5)"
+        ],
+        "candidates": [
+          {
+            "expr": "pi**2*(sqrt(24)/12)**2",
+            "display": "pi**2/6",
+            "digits_agreed": 50,
+            "provenance": "known_form"
+          }
+        ],
+        "note": "Airtight: search-low / verify-high / independent library (sympy re-eval). Pass many digits (PSLQ needs >16). NO LLM.",
+        "best": {
+          "expr": "pi**2*(sqrt(24)/12)**2",
+          "display": "pi**2/6",
+          "digits_agreed": 50,
+          "provenance": "known_form"
+        }
+      }
+    }
+  ]
+}
