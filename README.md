@@ -7,8 +7,8 @@
 [![PyPI](https://img.shields.io/pypi/v/mathlas-mcp)](https://pypi.org/project/mathlas-mcp/)
 [![DOI](https://zenodo.org/badge/1260785845.svg)](https://zenodo.org/badge/latestdoi/1260785845)
 [![Glama score](https://glama.ai/mcp/servers/Archerkattri/mathlas/badges/score.svg)](https://glama.ai/mcp/servers/Archerkattri/mathlas)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](pyproject.toml)
+[![License](https://img.shields.io/pypi/l/mathlas-mcp)](https://github.com/Archerkattri/mathlas/blob/main/LICENSE)
+[![Python](https://img.shields.io/pypi/pyversions/mathlas-mcp)](https://pypi.org/project/mathlas-mcp/)
 [![HF dataset](https://img.shields.io/badge/HF%20dataset-mathlas--corpus-yellow)](https://huggingface.co/datasets/kattri15/mathlas-corpus)
 
 > **An airtight-math tool an AI *uses* — no LLM, no API key, free.** Plug it into
