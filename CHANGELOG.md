@@ -5,6 +5,8 @@ tags; maintained by hand from v1.4.0 onward (same format: subject + short hash).
 
 ## Unreleased
 
+## v1.5.0 — 2026-07-02
+
 - docs: refresh RESULTS.md suite count (120 passed / 2 skipped on the Lean 4.31.0 toolchain) (64bbe52)
 - docs: add the verified elan/Lean 4.31.0 setup one-liner (fix dangling ref) (3a828bf)
 - docs(README): note the formal-conjectures corpus size (3,941 statements) (430df57)
