@@ -17,6 +17,12 @@
 > (candidates, verdicts, checklists, scaffolds) for the AI to reason over.
 > Apache-2.0. The code is free for any use; published corpus/index artifacts carry their own per-source terms (CC-BY/CC0).
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Archerkattri/mathlas/main/assets/demo_terminal.gif" alt="A real mathlas tool session: verify_formal returns VERIFIED_PROOF, then REFUTED with the kernel's verbatim error, then REJECTED for a sorry hole, all from the real Lean 4.31.0 kernel; identify_constant recovers pi**2/6 to 50 digits via PSLQ" width="820">
+  <br>
+  <sub><b>Every verdict from the real Lean 4.31.0 kernel / PSLQ + an independent re-eval — no LLM inside.</b> Real in-process tool outputs, captured by <a href="assets/gen/capture_outputs.py"><code>assets/gen/capture_outputs.py</code></a>.</sub>
+</p>
+
 ---
 
 ## Is this for you?
@@ -86,6 +92,12 @@ The discipline is **airtight-or-nothing**: a result is an independently-checkabl
 | Applicability moat | 15/15 decomp + 6/6 catch | — | atomic preconditions, misapplication traps | `benchmarks/moat_bench.py` |
 | FunSearch + web-aug | 14/14 | — | sandbox containment (network / timeout / memory) | `benchmarks/tools_bench.py` |
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Archerkattri/mathlas/main/assets/verification_tiers.png" alt="Zero-false-positive scoreboard: numeric 8/8 (0/3 FP), sequence 8/8 (0/3 FP), ramanujan 6/6 (0/2 FP), formal 7/7 (0 fake passes), applicability 15/15 with 6/6 traps caught, discovery 14/14 with 3/3 sandbox escapes contained — 100% recovery, false positives 0 across every tier" width="840">
+  <br>
+  <sub>The table above, at a glance — <b>0 false positives across every tier</b> (0/8 structureless inputs produced a false hit), 100% recovery on knowns. Numbers: <a href="RESULTS.md">RESULTS.md</a> §1–2b.</sub>
+</p>
+
 **Agent-in-the-loop, honestly reported (2026-06-10, Claude Fable 5):** the same headless agent given **18 math tasks** WITH the live mathlas MCP server as its only tool vs WITHOUT any tools scores **18/18 vs 15/18**. The original 10-task set is saturated (10/10 both ways: a frontier model passes it from parametric knowledge alone, and we say so plainly), so an 8-task hard set was added where verification, not recall, is the bottleneck: that set goes **8/8 WITH vs 5/8 WITHOUT**. The bare model times out on 50-digit integer-relation detection (PSLQ) and cannot name obscure OEIS sequences that shadow Catalan/Fibonacci prefixes and only diverge at depth. The bare passes it does earn are remarkable and we report them: it evaluated a 6-term constant relation to 45 digits by hand (residual 1.475e-27, correct), simulated IEEE-754 rounding bit-for-bit in its head (with one wrong exponent in prose), and proved a Machin-like formula exactly via Gaussian integers, all in-context at 3-9x the latency of a tool call. Every ground truth is a deterministic computation recorded in the bench; full table and provenance: [`RESULTS.md` §2c](RESULTS.md). Run: `benchmarks/agent_bench.py`.
 
 **The 3.68M-doc index.** `search_existing_math` is served from a **3,683,428-document** dense index (Qwen3-Embedding-8B, 4096-d): the **1.34M** permissive CC-BY/CC0 TheoremSearch subset + **2.34M** slogan-embedded arXiv-math documents from Dolma, dense + Okapi-BM25 + RRF. Honest headline recall at full 3.68M scale: **R@1 0.614 / R@10 0.832** querying by a document's raw *body* against its slogan-embedded entry — the hard **cross-representation** self-recall regime. (At the earlier 1.635M build, the easier same-representation slogan→slogan self-recall was R@1 0.977 / R@10 0.998 on its 81,833-doc held-out split.)
@@ -118,6 +130,12 @@ On TheoremSearch's own **110 human-written queries**, baseline mathlas hits a co
 | mathlas — baseline (corpus-only) | 10.0% | 11.8% |
 | **mathlas — after self-augmenting web loop** | **59.1% (65/110)** | **70.0% (77/110)** |
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Archerkattri/mathlas/main/assets/benchmark_hit20.png" alt="Theorem Hit@20 on TheoremSearch's 110-query benchmark: mathlas + self-augmenting web loop 59.1, TheoremSearch 45.0, Google 37.8 (paper-level), Gemini 3 Pro 27.0, ChatGPT 5.2 19.8, mathlas corpus-only baseline 10.0" width="780">
+  <br>
+  <sub><b>This is the loop's value, not a native-corpus claim.</b> The 10.0% baseline is licensing-bounded — TheoremSearch withheld ~85% of their 9.2M corpus, so 95/110 target papers are unreachable for any open system; the self-augmenting web loop repairs that coverage gap at AI-runtime. Google's bar is paper-level Hit@20 (no theorem number reported); every other bar is theorem Hit@20.</sub>
+</p>
+
 The 10.0% floor exists *because* TheoremSearch withheld 85% of their corpus — the loop repairs that coverage gap. Reproduce with `benchmarks/webaug_110_bench.py` (use the **full** 82-finding worklist `_findings_worklist_full.json`).
 
 **Source-aware retrieval (opt-in).** Growing the index 1.34M → 3.68M had a measured cost: the 2.34M web-mined Dolma docs crowd canonical papers out of the top-20 (corpus-only paper-level 13.6% → 11.8% on these same 110 queries). `search_existing_math` now takes optional `source_filter` / `source_weights` — e.g. `source_filter={"exclude": ["dolma"]}` when you want canonical theorem statements only — and excluding dolma **fully recovers the pre-growth 13.6%** paper-level (15/110; reachable-15 paper 15/15 = 100%) with theorem-level *above* the old index (11.8% vs 10.9%). The default ranking stays byte-identical (test-pinned). It is a **per-query-intent knob, not a free win**: on the n=3000 self-recall, 65% of whose targets ARE Dolma docs, down-weighting dolma is catastrophic for those queries (dolma-target R@10 0.999 → 0.884 at weight 0.5, → 0 when excluded) — exactly why it ships opt-in, default off. We also tested whether the v1.2 dual channel fixes this regression structurally, without the knob: it recovers part of it (paper 11.8% to 12.7%, theorem 10.0% to 10.9% at default settings) but not the full 13.6%, so the knob remains the documented mitigation on this benchmark. Full matrix: [`docs/02_eval_vs_theoremsearch.md`](docs/02_eval_vs_theoremsearch.md).
@@ -125,6 +143,10 @@ The 10.0% floor exists *because* TheoremSearch withheld 85% of their corpus — 
 ---
 
 ## The 12 tools
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Archerkattri/mathlas/main/assets/architecture.png" alt="mathlas architecture: any MCP client (Claude Code, Cursor, any agent) calls 12 pure data-returning tools grouped into RETRIEVE (search_existing_math via hybrid dense + BM25 to RRF to rerank, search_formal_math), VERIFY (verify_numeric with PSLQ + sympy, identify_constant, identify_sequence via OEIS, verify_formal via the Lean kernel), and DISCOVER (conjecture_relation, applicability_checklist, mapping_scaffold, funsearch, search_directive, add_finding loop); data is returned to the agent. The AI is the brain; mathlas is the hands, with no LLM inside." width="840">
+</p>
 
 ```
 search_existing_math ─▶ mapping_scaffold + applicability_checklist ─▶ (AI judges) ─▶ verify_numeric / verify_formal
