@@ -62,7 +62,7 @@ ax.xaxis.grid(True, color=S.GRID, lw=0.7, zorder=0)
 ax.set_axisbelow(True)
 
 # clean callout in the empty lower-right space (auto-sized text bbox)
-ax.text(41.5, 1.6,
+ax.text(48.0, 1.6,
         "The self-augmenting web loop:\n"
         "10.0 → 59.1   (+49.1 pts)\n"
         "the AI web-finds each missing\n"
