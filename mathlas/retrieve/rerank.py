@@ -98,7 +98,7 @@ class Qwen3Reranker(Reranker):
         except ImportError as e:  # pragma: no cover - optional heavy dep
             raise ImportError(
                 "Qwen3Reranker needs torch + transformers "
-                "(pip install 'mathlas[embed]'); without them reranking is "
+                "(pip install 'mathlas-mcp[embed]'); without them reranking is "
                 "unavailable and HybridRetriever serves the un-reranked fusion."
             ) from e
         dev = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -205,7 +205,7 @@ class JinaRerankerV3(Reranker):
         except ImportError as e:  # pragma: no cover - optional heavy dep
             raise ImportError(
                 "JinaRerankerV3 needs torch + transformers "
-                "(pip install 'mathlas[embed]'); without them reranking is "
+                "(pip install 'mathlas-mcp[embed]'); without them reranking is "
                 "unavailable and HybridRetriever serves the un-reranked fusion."
             ) from e
         # trust_remote_code: jina ships the rerank() head as repo code (documented

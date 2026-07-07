@@ -124,7 +124,7 @@ class Qwen3Embedder(Embedder):
             from sentence_transformers import SentenceTransformer
         except ImportError as e:  # pragma: no cover - optional heavy dep
             raise ImportError(
-                "pip install 'mathlas[embed]' (sentence-transformers + torch) "
+                "pip install 'mathlas-mcp[embed]' (sentence-transformers + torch) "
                 "for the Qwen3 production embedder; the default HashingEmbedder "
                 "needs no extra deps."
             ) from e
