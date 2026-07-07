@@ -5,6 +5,7 @@
 # mathlas
 
 [![PyPI](https://img.shields.io/pypi/v/mathlas-mcp)](https://pypi.org/project/mathlas-mcp/)
+[![CI](https://github.com/Archerkattri/mathlas/actions/workflows/ci.yml/badge.svg)](https://github.com/Archerkattri/mathlas/actions/workflows/ci.yml)
 [![DOI](https://zenodo.org/badge/1260785845.svg)](https://zenodo.org/badge/latestdoi/1260785845)
 [![Glama score](https://glama.ai/mcp/servers/Archerkattri/mathlas/badges/score.svg)](https://glama.ai/mcp/servers/Archerkattri/mathlas)
 [![License](https://img.shields.io/pypi/l/mathlas-mcp)](https://github.com/Archerkattri/mathlas/blob/main/LICENSE)
