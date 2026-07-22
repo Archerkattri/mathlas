@@ -1,0 +1,10 @@
+# Smithery configuration for mathlas (MCP server)
+# https://smithery.ai/docs
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    required: []
+    properties: {}
+  commandFunction: |-
+    (config) => ({ command: "uvx", args: ["--from", "mathlas-mcp", "mathlas-mcp"] })
