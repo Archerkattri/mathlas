@@ -5,12 +5,14 @@
 # mathlas
 
 [![PyPI](https://img.shields.io/pypi/v/mathlas-mcp)](https://pypi.org/project/mathlas-mcp/)
-[![CI](https://github.com/Archerkattri/mathlas/actions/workflows/ci.yml/badge.svg)](https://github.com/Archerkattri/mathlas/actions/workflows/ci.yml)
 [![DOI](https://zenodo.org/badge/1260785845.svg)](https://zenodo.org/badge/latestdoi/1260785845)
+[![mcp.so](https://img.shields.io/badge/mcp.so-listed-4b8bbe)](https://mcp.so/server/mathlas/Archerkattri)
 [![Glama score](https://glama.ai/mcp/servers/Archerkattri/mathlas/badges/score.svg)](https://glama.ai/mcp/servers/Archerkattri/mathlas)
 [![License](https://img.shields.io/pypi/l/mathlas-mcp)](https://github.com/Archerkattri/mathlas/blob/main/LICENSE)
 [![Python](https://img.shields.io/pypi/pyversions/mathlas-mcp)](https://pypi.org/project/mathlas-mcp/)
 [![HF dataset](https://img.shields.io/badge/HF%20dataset-mathlas--corpus-yellow)](https://huggingface.co/datasets/kattri15/mathlas-corpus)
+
+**Available on** [mcp.so](https://mcp.so/server/mathlas/Archerkattri) · [Glama](https://glama.ai/mcp/servers/Archerkattri/mathlas) · listed in [awesome-mcp-servers](https://github.com/punkpeye/awesome-mcp-servers) and [best-of-lean4](https://github.com/34j/best-of-lean4).
 
 > **An airtight-math tool an AI *uses* — no LLM, no API key, free.** Plug it into
 > Claude Code, Cursor, or any MCP client. The **AI is the brain**; mathlas is the
