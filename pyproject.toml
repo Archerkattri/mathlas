@@ -7,7 +7,7 @@ name = "mathlas-mcp"
 version = "1.5.0"
 description = "A tool FOR an AI (no API key, no LLM): search existing math over a 3.7M-doc index + airtight numeric/Lean verification + mathlib search (Loogle/LeanSearch) + OEIS/PSLQ identification + needs<->guarantees scaffolds, served over MCP."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [{ name = "Krishi Attri", email = "krishiattriwork@gmail.com" }]
 keywords = ["mathematics", "symbolic", "pslq", "theorem-retrieval", "verification",
@@ -21,7 +21,6 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Mathematics",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -42,11 +41,18 @@ mcp = ["mcp>=1.0"]                              # official MCP SDK for the serve
 # `lean` resolved at runtime (no Python dep). Hence no [sequences]/[formal] extras.
 retrieve = ["pyarrow>=14"]                      # read the open dataset parquets
 embed = ["sentence-transformers>=3.0", "torch>=2.1"]  # Qwen3 production embedder (offline GPU)
-test = ["pytest>=7"]                            # the CPU-only airtight regression suite
+test = [
+    "pytest>=7",
+    "tomli>=2; python_version < '3.11'",
+]                                               # the CPU-only airtight regression suite
 # Dev tooling. black is PINNED to the exact version the repo was formatted with so
 # `black --check` matches the committed style and never proposes a noisy reformat
 # of pre-existing code (a newer/older black would reflow untouched files).
-dev = ["pytest>=7", "black==26.5.1"]
+dev = [
+    "pytest>=7",
+    "tomli>=2; python_version < '3.11'",
+    "black==26.5.1",
+]
 
 [project.scripts]
 mathlas = "mathlas.cli:main"
@@ -61,7 +67,7 @@ include = ["mathlas*"]
 # produces a noisy, spurious diff. The vendored `reference/` tree is gitignored and
 # black skips it automatically.
 line-length = 88
-target-version = ["py39", "py310", "py311", "py312"]
+target-version = ["py310", "py311", "py312"]
 
 [tool.mypy]
 # These third-party scientific libraries ship no type stubs and no py.typed

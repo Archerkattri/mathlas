@@ -7,7 +7,11 @@ with a static fallback, so the two can never silently disagree again.
 from __future__ import annotations
 
 import pathlib
-import tomllib
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10
+    import tomli as tomllib
 
 import mathlas
 
