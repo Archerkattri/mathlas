@@ -16,6 +16,8 @@ on the TheoremSearch-110 (corpus-only 13.6% -> 11.8%). These tests pin:
 """
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 import numpy as np
 import pytest
 
@@ -182,7 +184,8 @@ def test_server_search_existing_math_plumbs_source_args(tmp_path, monkeypatch):
 
     out = server.tool_search_existing_math(
         QUERY, k=5, source_weights={"dolma": 0.25})
-    assert "arxiv.org" in out["candidates"][0]["source"]
+    top_host = urlparse(out["candidates"][0]["source"]).hostname
+    assert top_host == "arxiv.org"
 
     # tool count unchanged (12), and a bad key surfaces as an in-band error
     assert len(server.tool_names()) == 12
