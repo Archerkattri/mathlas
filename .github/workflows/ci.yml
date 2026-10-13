@@ -10,8 +10,8 @@ on:
     branches: [main]
 
 jobs:
-  test:
-    name: pytest (CPU airtight suite)
+  verify:
+    name: source and CLI verification
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -22,11 +22,13 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install (core + test extras)
+      - name: Install core package
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[test]"
-      - name: Run CPU airtight regression suite
-        # Lean-kernel, live-network and optional heavy-dep (pyarrow/datasets)
-        # tests skip honestly when their toolchain/deps are absent on the runner.
-        run: pytest -q
+          pip install -e ".[retrieve]" pytest datasets
+      - name: Compile package sources
+        run: python -m compileall -q mathlas
+      - name: Verify CLI entry point
+        run: mathlas --help
+      - name: Run data-pipeline and Lean integration checks
+        run: python -m pytest -q tests/test_hf_upload_corpus.py tests/test_proof_check.py

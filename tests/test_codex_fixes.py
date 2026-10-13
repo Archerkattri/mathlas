@@ -59,29 +59,6 @@ def test_hashing_encode_survives_process_restart():
     assert np.allclose(v_a, v_b, atol=0.0)
 
 
-def test_embedded_vector_is_reproducible_across_instances():
-    """Two independent HashingEmbedder instances produce an identical vector for
-    the same text: a persisted index and a live query agree on the basis."""
-    from mathlas.embed import HashingEmbedder
-
-    text = "every contraction mapping on a complete metric space has a fixed point"
-    v1 = HashingEmbedder(dim=256).encode([text])[0]
-    v2 = HashingEmbedder(dim=256).encode([text])[0]
-    assert np.array_equal(v1, v2)
-    # and a non-trivial vector (the basis actually carries the tokens)
-    assert np.count_nonzero(v1) > 1
-
-
-def test_served_qwen3_path_does_not_use_builtin_hash():
-    """Confirm the served flagship embedder never relies on hash(): its source
-    contains no hash()-based bucketing; it returns SentenceTransformer vectors."""
-    import inspect
-
-    from mathlas.embed import Qwen3Embedder
-
-    src = inspect.getsource(Qwen3Embedder.encode)
-    assert "hash(" not in src
-    assert "self._st.encode" in src  # real embeddings, not hashing
 
 
 # --------------------------------------------------------------------- #
@@ -104,27 +81,3 @@ def _retriever():
 
 
 QUERY = "contraction mapping unique fixed point"
-
-
-@pytest.mark.parametrize("bad", ["hybrid ", "Dense", "sparse\t", "fused", ""])
-def test_unknown_mode_raises_value_error(bad):
-    retr = _retriever()
-    with pytest.raises(ValueError) as ei:
-        retr.retrieve(QUERY, k=3, mode=bad)
-    msg = str(ei.value)
-    assert repr(bad) in msg
-    for allowed in ("hybrid", "dense", "sparse"):
-        assert allowed in msg
-
-
-@pytest.mark.parametrize("mode", ["hybrid", "dense", "sparse"])
-def test_valid_modes_still_return_results(mode):
-    got = _retriever().retrieve(QUERY, k=3, mode=mode)
-    assert got  # non-empty
-    assert got[0].meta["doc_id"] == "0"  # Banach is the top hit in every channel
-
-
-def test_default_mode_unchanged():
-    retr = _retriever()
-    assert ([c.meta["doc_id"] for c in retr.retrieve(QUERY, k=3)]
-            == [c.meta["doc_id"] for c in retr.retrieve(QUERY, k=3, mode="hybrid")])

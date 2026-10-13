@@ -41,15 +41,10 @@ mcp = ["mcp>=1.0"]                              # official MCP SDK for the serve
 # `lean` resolved at runtime (no Python dep). Hence no [sequences]/[formal] extras.
 retrieve = ["pyarrow>=14"]                      # read the open dataset parquets
 embed = ["sentence-transformers>=3.0", "torch>=2.1"]  # Qwen3 production embedder (offline GPU)
-test = [
-    "pytest>=7",
-    "tomli>=2; python_version < '3.11'",
-]                                               # the CPU-only airtight regression suite
 # Dev tooling. black is PINNED to the exact version the repo was formatted with so
 # `black --check` matches the committed style and never proposes a noisy reformat
 # of pre-existing code (a newer/older black would reflow untouched files).
 dev = [
-    "pytest>=7",
     "tomli>=2; python_version < '3.11'",
     "black==26.5.1",
 ]
@@ -77,7 +72,3 @@ target-version = ["py310", "py311", "py312"]
 [[tool.mypy.overrides]]
 module = ["mpmath", "mpmath.*", "sympy", "sympy.*", "scipy", "scipy.*"]
 ignore_missing_imports = true
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = "-q"

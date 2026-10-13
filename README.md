@@ -6,7 +6,7 @@
 
 [![PyPI](https://img.shields.io/pypi/v/mathlas-mcp)](https://pypi.org/project/mathlas-mcp/)
 [![Downloads](https://static.pepy.tech/badge/mathlas-mcp)](https://pepy.tech/project/mathlas-mcp)
-[![DOI](https://zenodo.org/badge/1260785845.svg)](https://zenodo.org/badge/latestdoi/1260785845)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21121115.svg)](https://doi.org/10.5281/zenodo.21121115)
 [![mcp.so](https://img.shields.io/badge/mcp.so-listed-4b8bbe)](https://mcp.so/server/mathlas/Archerkattri)
 [![Glama score](https://glama.ai/mcp/servers/Archerkattri/mathlas/badges/score.svg)](https://glama.ai/mcp/servers/Archerkattri/mathlas)
 [![License](https://img.shields.io/pypi/l/mathlas-mcp)](https://github.com/Archerkattri/mathlas/blob/main/LICENSE)
@@ -193,7 +193,12 @@ verify_formal(statement="2 + 2 = 5", proof="rfl")
 //     the left-hand side 2 + 2 is not definitionally equal to the right-hand side 5 ...", ...}
 ```
 
-No fake passes, by construction: `sorry`/`admit` holes are **REJECTED** (Lean itself exits 0 on a sorried proof — mathlas scans the source *and* the kernel's `sorryAx` diagnostics); a missing toolchain, a timeout (60 s cap), or an import this bare toolchain can't resolve all return an honest `UNDETERMINED`, never a verdict. The whole contract is pinned by `tests/test_proof_check.py` (20 tests against the real Lean 4.31.0 kernel: correct term *and* tactic-block proofs verified, wrong proofs refuted with the kernel's message, sorried proofs rejected, toolchain-absent honest).
+No fake passes, by construction: `sorry`/`admit` holes are **REJECTED** (Lean itself exits 0 on a sorried proof — mathlas scans the source *and* the kernel's `sorryAx` diagnostics); a missing toolchain, a timeout (60 s cap), or an import this bare toolchain can't resolve all return an honest `UNDETERMINED`, never a verdict. `tests/test_proof_check.py` retains only the real-kernel integration checks; pure declaration/parser and API-surface unit cases are not included on this review branch. CI also runs the synthetic Hugging Face Parquet build/load integration checks in `tests/test_hf_upload_corpus.py`.
+
+Run the CPU data-pipeline and optional Lean-kernel integration checks with
+`python -m pip install -e ".[retrieve]" pytest datasets` followed by
+`python -m pytest -q tests/test_hf_upload_corpus.py tests/test_proof_check.py`.
+The Lean cases skip when no Lean executable is available.
 
 ---
 

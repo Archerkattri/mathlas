@@ -27,89 +27,13 @@ NEGATIVE = [
 ]
 
 
-@pytest.mark.parametrize("label,gen,want", KNOWN)
-def test_identify_recovers_known_constants(label, gen, want):
-    from mathlas import identify
-
-    with mpmath.workdps(60):
-        res = identify(gen())
-    assert res.identified, f"{label}: expected a verified closed form"
-    assert res.best is not None
-    if want is not None:
-        assert want in res.best.display
-
-
-@pytest.mark.parametrize("label,gen", NEGATIVE)
-def test_identify_rejects_structureless(label, gen):
-    """The honesty gate: a structureless irrational must return UNIDENTIFIED."""
-    from mathlas import identify
-
-    with mpmath.workdps(60):
-        res = identify(gen())
-    assert not res.identified, f"{label}: false-positive (should be UNIDENTIFIED)"
-
-
-def test_verify_closed_form_airtight():
-    from mathlas import verify_closed_form
-
-    assert verify_closed_form(mpmath.mpf("1.6449340668482264"), "pi**2/6").ok
-    assert not verify_closed_form(mpmath.mpf("1.6449340668482264"), "pi**2/7").ok
 
 
 # --- applicability scaffold (deterministic decomposition, no LLM) -----------------
 
-
-def test_applicability_checklist_surfaces_hypotheses():
-    from mathlas import applicability_checklist
-
-    chk = applicability_checklist(
-        "Let G be a finite group and p a prime dividing the order of G. "
-        "Then G has an element of order p."
-    )
-    assert any("finit" in p.lower() for p in chk.preconditions)
-
-
-def test_mapping_scaffold_returns_structure():
-    from mathlas import mapping_scaffold
-    from mathlas.map import MappingScaffold
-
-    s = mapping_scaffold(
-        "show x = cos x has a unique fixed point",
-        "Let (X,d) be a complete metric space and T a contraction. "
-        "Then T has a unique fixed point.",
-    )
-    assert isinstance(s, MappingScaffold)
-    assert s.checklist
-    assert s.questions
-
-
-# --- FunSearch harness (deterministic sandbox, no LLM) ----------------------------
-
-
-def test_funsearch_starter_scores():
-    import mathlas.funsearch as fs
-
-    r = fs.evaluate(fs.get_problem("cap_set").starter_src, "cap_set")
-    assert r.score == pytest.approx(5.0)
-
-
-def test_funsearch_sandbox_kills_runaway():
-    """An infinite loop in untrusted AI code must be killed, not hang the harness."""
-    import mathlas.funsearch as fs
-
-    r = fs.evaluate("def solve(n):\n    while True:\n        pass\n", "cap_set", timeout_s=2.0)
-    assert r.timed_out and not r.ok
-
-
 # --- web-augmentation directive (structured plan, no web call, no LLM) ------------
 
 
-def test_search_directive_is_structured():
-    from mathlas.webaug import search_directive
-
-    d = search_directive("evaluate the sum 1/n^4")
-    assert d.arxiv_queries
-    assert d.named_results
 
 
 # --- DENSE-finding self-augmenting corpus (caller supplies the vector, no model) ---

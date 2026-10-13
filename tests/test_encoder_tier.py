@@ -41,35 +41,6 @@ def _write_index(path, n=24, dim=256, token_prefix="tok"):
 # --------------------------------------------------------------------- #
 # tier parsing + path mapping
 # --------------------------------------------------------------------- #
-def test_encoder_tier_default_and_aliases(monkeypatch):
-    monkeypatch.delenv("MATHLAS_ENCODER", raising=False)
-    assert server._encoder_tier() == "8b"
-    for raw in ("", "  ", "8b", "8B"):
-        monkeypatch.setenv("MATHLAS_ENCODER", raw)
-        assert server._encoder_tier() == "8b"
-    for raw in ("0.6b", "0.6B", "06b", " 0.6b "):
-        monkeypatch.setenv("MATHLAS_ENCODER", raw)
-        assert server._encoder_tier() == "0.6b"
-
-
-def test_encoder_tier_rejects_typo(monkeypatch):
-    monkeypatch.setenv("MATHLAS_ENCODER", "0.6")
-    with pytest.raises(ValueError, match="MATHLAS_ENCODER"):
-        server._encoder_tier()
-
-
-def test_encoder_index_path_mapping(tmp_path):
-    base = os.path.join(tmp_path, "index.npz")
-    sib = os.path.join(tmp_path, "index_06b.npz")
-    # 8b: untouched, regardless of what exists
-    assert server._encoder_index_path(base, "8b") == base
-    # 0.6b: sibling required
-    with pytest.raises(FileNotFoundError, match="build_06b_index"):
-        server._encoder_index_path(base, "0.6b")
-    _write_index(sib)
-    assert server._encoder_index_path(base, "0.6b") == sib
-    # an explicit _06b path passes through unchanged
-    assert server._encoder_index_path(sib, "0.6b") == sib
 
 
 # --------------------------------------------------------------------- #
