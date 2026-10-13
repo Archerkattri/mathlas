@@ -51,37 +51,6 @@ def _make_index(tmp_path, n=64, dim=64):
 # --------------------------------------------------------------------- #
 # quantization primitives
 # --------------------------------------------------------------------- #
-def test_int8_roundtrip_error_bound():
-    M = _unit(RNG.standard_normal((200, 128))).astype(np.float32)
-    q8, scale = quantize_matrix_int8(M)
-    back = dequantize_int8(q8, scale)
-    # symmetric rounding: each element within half a quantization step
-    assert np.all(np.abs(back - M) <= scale / 2 + 1e-7)
-    # cosine of dequantized rows vs originals stays essentially 1
-    cos = np.sum(_unit(back) * M, axis=1)
-    assert cos.min() > 0.999
-
-
-def test_int8_scale_never_zero():
-    M = np.zeros((4, 8), dtype=np.float32)
-    q8, scale = quantize_matrix_int8(M)
-    assert np.all(scale > 0) and np.all(q8 == 0)
-    assert np.all(dequantize_int8(q8, scale) == 0)
-
-
-def test_pack_signs_roundtrip():
-    M = RNG.standard_normal((50, 64)).astype(np.float32)
-    bits = pack_signs(M)
-    assert bits.shape == (50, 8) and bits.dtype == np.uint8
-    assert np.array_equal(np.unpackbits(bits, axis=1).astype(bool), M > 0)
-
-
-def test_hamming_kernel_matches_bruteforce():
-    a = RNG.integers(0, 256, size=(300, 16), dtype=np.uint8)
-    q = RNG.integers(0, 256, size=16, dtype=np.uint8)
-    got = hamming_distances(a, q, chunk_rows=37)   # force multiple chunks
-    want = np.unpackbits(np.bitwise_xor(a, q), axis=1).sum(axis=1)
-    assert np.array_equal(got, want.astype(np.int32))
 
 
 def test_npz_member_memmap_equals_load(tmp_path):

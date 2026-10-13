@@ -33,9 +33,11 @@ The built dataset lands in ``reference/downloads/hf_corpus/`` (gitignored via
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from typing import Dict, Iterator, List, Optional, Sequence
@@ -517,13 +519,26 @@ def validate(out_dir: str = DEFAULT_OUT, sample: bool = True) -> dict:
     from datasets import load_dataset
     with open(os.path.join(out_dir, "stats.json"), encoding="utf-8") as f:
         stats = json.load(f)
-    cache = os.path.join(out_dir, ".validate_cache")
+    # Keep the validation cache outside the generated corpus directory. The
+    # datasets file-lock name incorporates each local source path; placing it
+    # beside a long Windows output path can exceed MAX_PATH even when the data
+    # files themselves are accessible.
+    out_key = hashlib.sha256(os.path.abspath(out_dir).encode("utf-8")).hexdigest()[:16]
+    cache = os.path.join(tempfile.gettempdir(), "mathlas-hf-validate", out_key)
     report = {}
     for c, info in stats["configs"].items():
-        files = sorted(
+        absolute_files = sorted(
             os.path.join(out_dir, "data", c, p)
             for p in os.listdir(os.path.join(out_dir, "data", c))
             if p.endswith(".parquet"))
+        try:
+            relative_files = [os.path.relpath(path, os.getcwd()) for path in absolute_files]
+        except ValueError:
+            relative_files = absolute_files
+        files = [
+            relative if len(relative) < len(absolute) else absolute
+            for absolute, relative in zip(absolute_files, relative_files)
+        ]
         ds = load_dataset("parquet", data_files={"train": files},
                           split="train", cache_dir=cache)
         ok = len(ds) == info["rows"]
